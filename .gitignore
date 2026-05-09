@@ -1,0 +1,28 @@
+# Build artifacts
+/argusd
+/openwrt-status
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test/coverage
+*.test
+*.out
+coverage.*
+/tmp/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Dependency vendor
+/vendor/
+
+# Local env
+.env
+.env.local
