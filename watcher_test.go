@@ -2,6 +2,7 @@ package argus
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 )
@@ -663,6 +664,90 @@ func TestHandleDisconnectHintPingFailed(t *testing.T) {
 	}
 	if _, ok := w.known["aa:bb:cc:dd:ee:ff"]; ok {
 		t.Error("应从 known 移除")
+	}
+}
+
+// TestHandleDisconnectHintDedupesInFlight 验证 disconnect/deauth/Del Sta 三连发
+// 时, 仅第一个 worker 走完整 500ms+ping 流程, 后续重复 hint 立即返回。
+func TestHandleDisconnectHintDedupesInFlight(t *testing.T) {
+	p := fakeProber{reachable: map[string]bool{}} // ping 全失败
+	w := New(WithFetcher(staticFetcher{}), WithProber(p))
+	w.known["aa:bb:cc:dd:ee:ff"] = Device{MAC: "aa:bb:cc:dd:ee:ff", IP: "1.1.1.1"}
+
+	var decisions []DecisionKind
+	var dmu sync.Mutex
+	w.onDecision = func(d Decision) {
+		dmu.Lock()
+		decisions = append(decisions, d.Kind)
+		dmu.Unlock()
+	}
+
+	col := &eventCollector{}
+	var emitMu sync.Mutex
+	emit := func(e Event) {
+		emitMu.Lock()
+		col.events = append(col.events, e)
+		emitMu.Unlock()
+	}
+
+	// Worker 1: 进入 500ms Sleep + ping 流程
+	done1 := make(chan struct{})
+	go func() {
+		w.handleDisconnectHint(context.Background(), "aa:bb:cc:dd:ee:ff", emit)
+		close(done1)
+	}()
+
+	// 等 worker 1 把 mac 加入 inFlight 集合
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		w.stateMu.Lock()
+		_, inflight := w.disconnectInFlight["aa:bb:cc:dd:ee:ff"]
+		w.stateMu.Unlock()
+		if inflight {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Worker 2: 应在 worker 1 仍在 Sleep 时立即返回 (不进入 500ms 等待)
+	t2 := time.Now()
+	w.handleDisconnectHint(context.Background(), "aa:bb:cc:dd:ee:ff", emit)
+	if d := time.Since(t2); d > 100*time.Millisecond {
+		t.Errorf("第二个 hint 应立即返回, 实际耗时 %s (应远小于 500ms)", d)
+	}
+
+	<-done1
+
+	emitMu.Lock()
+	gotEvents := len(col.events)
+	emitMu.Unlock()
+	if gotEvents != 1 || col.events[0].Kind != EventOffline {
+		t.Fatalf("应只触发 1 次 EventOffline, got %d events: %+v", gotEvents, col.events)
+	}
+
+	dmu.Lock()
+	defer dmu.Unlock()
+	var skipped, emitted int
+	for _, k := range decisions {
+		if k == DecisionDisconnectSkippedInflight {
+			skipped++
+		}
+		if k == DecisionOfflineEmitted {
+			emitted++
+		}
+	}
+	if skipped != 1 {
+		t.Errorf("应有 1 次 DISCONNECT_SKIP_INFLIGHT, 实际 %d", skipped)
+	}
+	if emitted != 1 {
+		t.Errorf("应有 1 次 OFFLINE_EMIT, 实际 %d", emitted)
+	}
+
+	// inFlight 集合应在 worker 1 退出后清空
+	w.stateMu.Lock()
+	defer w.stateMu.Unlock()
+	if _, still := w.disconnectInFlight["aa:bb:cc:dd:ee:ff"]; still {
+		t.Error("worker 退出后应从 disconnectInFlight 清除")
 	}
 }
 

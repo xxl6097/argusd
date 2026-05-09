@@ -17,6 +17,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.0] - 2026-05-09
+
+### Changed · 变更
+
+- **Disconnect hint dedup** · 断开提示去重
+  `handleDisconnectHint` now tracks an in-flight MAC set and short-circuits
+  duplicate hints. A typical disconnect emits 3 syslog lines (disconnect /
+  deauth / Del Sta) within milliseconds, spawning 3 workers. Previously all
+  three entered the 500 ms wait + ping path; the second/third only no-op'd
+  after the first deleted the MAC from `known`. Now only the first worker
+  runs the full path; the rest emit `DISCONNECT_SKIP_INFLIGHT` and return
+  immediately. Saves ≈ 2 × (500 ms sleep + ping cost) and avoids redundant
+  ping of an already-known-offline IP under burst.
+  No behavior change to event emissions — still exactly one `EventOffline`
+  per logical disconnect.
+  Observed on a real MT7981 router: 3 `DISCONNECT_HINT` traces previously
+  all entered the slow path; now 1 runs and 2 are skipped. (`watcher.go`,
+  `decision.go`)
+
+### Added · 新增
+
+- New `DecisionKind`: `DecisionDisconnectSkippedInflight` (string
+  `DISCONNECT_SKIP_INFLIGHT`, label "跳过(已在处理)"). Surfaces the
+  dedup decision in `DecisionHandler` traces. (`decision.go`)
+- Test `TestHandleDisconnectHintDedupesInFlight` covers the dedup path
+  under `-race`. (`watcher_test.go`)
+
+---
+
 ## [0.1.0] - 2026-05-09
 
 Initial public release · 首次公开发布。
@@ -124,5 +153,6 @@ Initial public release · 首次公开发布。
 Link references (kept at the bottom for readability).
 -->
 
-[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/xxl6097/argusd/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/xxl6097/argusd/releases/tag/v0.1.0

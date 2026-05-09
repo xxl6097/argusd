@@ -226,6 +226,11 @@ type Watcher struct {
 	// lastEventAt 记录每台设备最近一次触发外发事件的时刻和类型,
 	// 用于 FlapSuppressionWindow 抑制中等信号设备的连续快闪。
 	lastEventAt map[string]lastEvent
+	// disconnectInFlight 记录当前正在执行 handleDisconnectHint 的 MAC 集合,
+	// 用于去重: 同一断开通常会在毫秒内连发 disconnect/deauth/Del Sta 三条 hint,
+	// 由 runSyslogConsumer 派生 3 个 worker, 但只有第一个需要进入 500ms Sleep + ping
+	// 流程, 后两个直接静默跳过 (DecisionDisconnectSkippedInflight)。
+	disconnectInFlight map[string]struct{}
 
 	// droppedHints 记录因 syslogHints channel 已满而丢弃的事件数,
 	// 周期性通过 onError 报告。
@@ -280,12 +285,13 @@ func (w *Watcher) recordEvent(mac string, kind EventKind, now time.Time) {
 // New 创建一个 Watcher。Option 用于覆盖默认配置或注入自定义组件。
 func New(opts ...Option) *Watcher {
 	w := &Watcher{
-		cfg:             DefaultConfig(),
-		syslogHints:     make(chan syslogHint, 256),
-		known:           make(map[string]Device),
-		misses:          make(map[string]int),
-		offlineCooldown: make(map[string]time.Time),
-		lastEventAt:     make(map[string]lastEvent),
+		cfg:                DefaultConfig(),
+		syslogHints:        make(chan syslogHint, 256),
+		known:              make(map[string]Device),
+		misses:             make(map[string]int),
+		offlineCooldown:    make(map[string]time.Time),
+		lastEventAt:        make(map[string]lastEvent),
+		disconnectInFlight: make(map[string]struct{}),
 	}
 	for _, opt := range opts {
 		opt(w)
@@ -479,15 +485,33 @@ func (w *Watcher) runSyslogConsumer(ctx context.Context, onEvent EventHandler, o
 
 // handleDisconnectHint 当系统日志报告某设备断开时, 立即探测并判断是否真正离线。
 // 在独立 goroutine 中执行, 不阻塞主循环。
+//
+// 同一断开通常在毫秒内连发 disconnect/deauth/Del Sta 三条 syslog, 派生 3 个 worker。
+// 入口处的 disconnectInFlight 集合保证只有第一个 worker 进入 500ms Sleep + ping
+// 流程, 后续重复 hint 直接发 DISCONNECT_SKIP_INFLIGHT 决策返回, 节省 ~2 × 1.5s
+// 的 worker 时间和一次冗余 ping。
 func (w *Watcher) handleDisconnectHint(ctx context.Context, mac string, onEvent EventHandler) {
 	w.emitDecision(DecisionDisconnectHintReceived, mac, "")
+
 	w.stateMu.Lock()
+	if _, inflight := w.disconnectInFlight[mac]; inflight {
+		w.stateMu.Unlock()
+		w.emitDecision(DecisionDisconnectSkippedInflight, mac, "")
+		return
+	}
 	d, ok := w.known[mac]
-	w.stateMu.Unlock()
 	if !ok {
+		w.stateMu.Unlock()
 		w.emitDecision(DecisionDisconnectIgnoredUnknown, mac, "")
 		return
 	}
+	w.disconnectInFlight[mac] = struct{}{}
+	w.stateMu.Unlock()
+	defer func() {
+		w.stateMu.Lock()
+		delete(w.disconnectInFlight, mac)
+		w.stateMu.Unlock()
+	}()
 
 	// 等一小段时间让设备有机会重新关联 (漫游/瞬断)
 	select {

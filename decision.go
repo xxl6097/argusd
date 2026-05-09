@@ -40,6 +40,10 @@ const (
 	DecisionFlapSuppressOffline DecisionKind = 24
 	// DecisionCooldownSuppressOffline: 冷却期内重复离线被静默移除, 不重复触发事件。
 	DecisionCooldownSuppressOffline DecisionKind = 25
+	// DecisionDisconnectSkippedInflight: 同一 MAC 已有正在处理的 disconnect worker,
+	// 后续重复 hint (典型: disconnect/deauth/Del Sta 三连发) 直接跳过, 不再各自
+	// 进入 500ms Sleep + ping 流程。
+	DecisionDisconnectSkippedInflight DecisionKind = 26
 
 	// --- diff 轮询分支 ---
 
@@ -80,6 +84,8 @@ func (k DecisionKind) String() string {
 		return "FLAP_SUPPRESS_OFFLINE"
 	case DecisionCooldownSuppressOffline:
 		return "COOLDOWN_SUPPRESS_OFFLINE"
+	case DecisionDisconnectSkippedInflight:
+		return "DISCONNECT_SKIP_INFLIGHT"
 	case DecisionPollAPSleepProtected:
 		return "POLL_SLEEP_PROTECT"
 	case DecisionPollWeakSignalMiss:
@@ -119,6 +125,8 @@ func (k DecisionKind) Label() string {
 		return "抖动抑制离线"
 	case DecisionCooldownSuppressOffline:
 		return "冷却期抑制离线"
+	case DecisionDisconnectSkippedInflight:
+		return "跳过(已在处理)"
 	case DecisionPollAPSleepProtected:
 		return "息屏保护"
 	case DecisionPollWeakSignalMiss:
