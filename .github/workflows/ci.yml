@@ -8,45 +8,47 @@ on:
 
 jobs:
   test:
-    name: Test (Go ${{ matrix.go-version }})
+    name: Test
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ["1.21.x", "1.22.x", "1.23.x"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version-file: go.mod
+          check-latest: true
       - name: go vet
         run: go vet ./...
       - name: go test -race
         run: go test -race -coverprofile=coverage.out ./...
       - name: Coverage report
-        if: matrix.go-version == '1.23.x'
         run: go tool cover -func=coverage.out | tail -1
 
   cross-compile:
-    name: Cross-compile for OpenWrt targets
+    name: Cross-compile ${{ matrix.name }}
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        goarch: [amd64, arm64, arm, mipsle, mips]
+        include:
+          - { name: linux-amd64,             goos: linux, goarch: amd64 }
+          - { name: linux-arm64,             goos: linux, goarch: arm64 }
+          - { name: linux-armv7,             goos: linux, goarch: arm,       goarm: "7" }
+          - { name: linux-mipsle-softfloat,  goos: linux, goarch: mipsle,    gomips: softfloat }
+          - { name: linux-mips-softfloat,    goos: linux, goarch: mips,      gomips: softfloat }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.23.x"
-      - name: Build argusd (linux/${{ matrix.goarch }})
+          go-version-file: go.mod
+          check-latest: true
+      - name: Build argusd (${{ matrix.name }})
         env:
           CGO_ENABLED: "0"
-          GOOS: linux
+          GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          GOMIPS: ${{ matrix.gomips }}
         run: |
           go build -trimpath -ldflags="-s -w" \
-              -o argusd-linux-${{ matrix.goarch }} ./cmd/argusd
-          ls -lh argusd-linux-${{ matrix.goarch }}
-      - uses: actions/upload-artifact@v4
-        with:
-          name: argusd-linux-${{ matrix.goarch }}
-          path: argusd-linux-${{ matrix.goarch }}
+              -o argusd-${{ matrix.name }} ./cmd/argusd
+          ls -lh argusd-${{ matrix.name }}

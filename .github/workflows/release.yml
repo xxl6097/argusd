@@ -1,0 +1,157 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (for dry-run / manual test). If empty, uses HEAD."
+        required: false
+        default: ""
+
+permissions:
+  contents: write  # required to create/upload releases
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64
+            goos: linux
+            goarch: amd64
+          - name: linux-386
+            goos: linux
+            goarch: "386"
+          - name: linux-arm64
+            goos: linux
+            goarch: arm64
+          - name: linux-armv5
+            goos: linux
+            goarch: arm
+            goarm: "5"
+          - name: linux-armv7
+            goos: linux
+            goarch: arm
+            goarm: "7"
+          - name: linux-mips-softfloat
+            goos: linux
+            goarch: mips
+            gomips: softfloat
+          - name: linux-mipsle-softfloat
+            goos: linux
+            goarch: mipsle
+            gomips: softfloat
+          - name: linux-mips64-softfloat
+            goos: linux
+            goarch: mips64
+            gomips: softfloat
+          - name: linux-mips64le-softfloat
+            goos: linux
+            goarch: mips64le
+            gomips: softfloat
+          - name: linux-riscv64
+            goos: linux
+            goarch: riscv64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            VERSION="${GITHUB_REF_NAME}"
+          elif [ -n "${{ inputs.tag }}" ]; then
+            VERSION="${{ inputs.tag }}"
+          else
+            VERSION="dev-$(git rev-parse --short HEAD)"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building version: ${VERSION}"
+
+      - name: Build argusd
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          GOMIPS: ${{ matrix.gomips }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          mkdir -p dist
+          OUT="dist/argusd"
+          go build \
+            -trimpath \
+            -ldflags="-s -w -X main.version=${VERSION}" \
+            -o "${OUT}" \
+            ./cmd/argusd
+          file "${OUT}" || true
+          ls -lh "${OUT}"
+
+      - name: Package tarball
+        id: pkg
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          PKG="argusd_${VERSION}_${{ matrix.name }}"
+          STAGE="dist/${PKG}"
+          mkdir -p "${STAGE}"
+          mv dist/argusd "${STAGE}/argusd"
+          cp README.md LICENSE ONLINE.md OFFLINE.md "${STAGE}/"
+          tar -C dist -czf "dist/${PKG}.tar.gz" "${PKG}"
+          ( cd dist && sha256sum "${PKG}.tar.gz" > "${PKG}.tar.gz.sha256" )
+          ls -lh dist/
+          echo "archive=${PKG}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          retention-days: 7
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Aggregate SHA256SUMS
+        run: |
+          ls -lh dist/
+          cd dist
+          cat *.tar.gz.sha256 > SHA256SUMS
+          rm -f *.tar.gz.sha256
+          echo "--- SHA256SUMS ---"
+          cat SHA256SUMS
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS

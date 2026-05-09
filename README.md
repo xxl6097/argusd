@@ -111,6 +111,24 @@ func main() {
 
 ### 作为 CLI 使用 · Use as a CLI
 
+**EN** — Prebuilt binaries for common OpenWrt CPU architectures are published on the [Releases page](https://github.com/xxl6097/argusd/releases) (amd64 / arm64 / armv5 / armv7 / mips / mipsle / mips64 / mips64le / riscv64 / 386, all static).
+**中文** — 常见 OpenWrt 架构的预编译二进制发布在 [Releases 页面](https://github.com/xxl6097/argusd/releases)(amd64 / arm64 / armv5 / armv7 / mips / mipsle / mips64 / mips64le / riscv64 / 386, 全部静态链接)。
+
+```bash
+# EN: Download the matching archive, verify, and deploy.
+# 中文: 下载对应架构的包, 校验, 上传路由器。
+VER=v0.1.0        # 替换为实际版本
+TARGET=linux-mipsle-softfloat   # 替换为你的架构
+curl -LO "https://github.com/xxl6097/argusd/releases/download/${VER}/argusd_${VER}_${TARGET}.tar.gz"
+curl -LO "https://github.com/xxl6097/argusd/releases/download/${VER}/SHA256SUMS"
+sha256sum -c SHA256SUMS --ignore-missing
+tar -xzf argusd_${VER}_${TARGET}.tar.gz
+scp argusd_${VER}_${TARGET}/argusd root@192.168.1.1:/tmp/argusd
+ssh root@192.168.1.1 '/tmp/argusd'
+```
+
+Or build from source · 或从源码构建:
+
 ```bash
 # EN: Cross-compile for OpenWrt (aarch64 example).
 # 中文: 跨编译到 OpenWrt (以 aarch64 路由器为例)。
