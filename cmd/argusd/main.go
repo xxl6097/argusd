@@ -11,7 +11,7 @@ import (
 	"strings"
 	"syscall"
 
-	owrt "github.com/uuxia/argus"
+	owrt "github.com/xxl6097/argus"
 )
 
 func main() {

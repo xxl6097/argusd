@@ -1,3 +1,3 @@
-module github.com/uuxia/argus
+module github.com/xxl6097/argus
 
 go 1.25

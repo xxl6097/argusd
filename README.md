@@ -3,8 +3,8 @@
 > **EN** — The hundred-eyed watcher for OpenWrt device presence.
 > **中文** — 百眼守望者 · 多源融合的 OpenWrt 接入设备观察库。
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/uuxia/argus.svg)](https://pkg.go.dev/github.com/uuxia/argus)
-[![Go Report Card](https://goreportcard.com/badge/github.com/uuxia/argus)](https://goreportcard.com/report/github.com/uuxia/argus)
+[![Go Reference](https://pkg.go.dev/badge/github.com/xxl6097/argus.svg)](https://pkg.go.dev/github.com/xxl6097/argus)
+[![Go Report Card](https://goreportcard.com/badge/github.com/xxl6097/argus)](https://goreportcard.com/report/github.com/xxl6097/argus)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-passing-brightgreen)](.)
 
@@ -73,7 +73,7 @@
 ### 作为库使用 · Use as a library
 
 ```go
-import argus "github.com/uuxia/argus"
+import argus "github.com/xxl6097/argus"
 
 func main() {
     // EN: parse router's /etc/TZ into time.Local (so logs match wall clock).
@@ -242,15 +242,17 @@ Guidelines · 使用建议:
 
 ## 可观测性 · Observability
 
-**EN** — Argus exposes four callback channels; use the right one for the right audience.
-**中文** — Argus 对外暴露四条回调通道,不同受众用不同通道。
+**EN** — Argus exposes three Watcher callback channels; use the right one for the right audience.
+**中文** — Watcher 对外暴露三条回调通道,不同受众用不同通道。
 
 | Channel · 通道 | Type · 类型 | Frequency · 频率 | Use case · 用途 |
 |---------|------|-----------|----------|
-| `EventHandler` | `Event` | Sparse · 稀疏 | **EN** Business logic · **中文** 业务逻辑(home/away 自动化) |
-| `SyslogHandler` | `SyslogEvent` | Medium · 中等 | **EN** Raw log mirror · **中文** 原始日志镜像 |
-| `ErrorHandler` | `error` | Rare · 罕见 | **EN** Non-fatal failures · **中文** 非致命错误 |
-| `DecisionHandler` | `Decision` | Dense · 密集 | **EN** Tuning / debugging · **中文** 调参 / 排障 |
+| `EventHandler` (arg to `Run`) | `Event` | Sparse · 稀疏 | **EN** Business logic · **中文** 业务逻辑(home/away 自动化) |
+| `ErrorHandler` (arg to `Run`) | `error` | Rare · 罕见 | **EN** Non-fatal failures · **中文** 非致命错误 |
+| `WithDecisionHandler` | `Decision` | Dense · 密集 | **EN** Tuning / debugging · **中文** 调参 / 排障 |
+
+**EN** — For raw syslog mirroring, call `WatchSyslog(ctx, func(SyslogEvent), onError)` directly — it's a standalone helper, not a Watcher option.
+**中文** — 需要镜像原始系统日志时,直接调用 `WatchSyslog(ctx, func(SyslogEvent), onError)`,它是独立函数,非 Watcher 选项。
 
 Sample decision trace · 决策跟踪示例:
 
@@ -299,8 +301,8 @@ Sample decision trace · 决策跟踪示例:
 | OpenWrt 23.05+ stock · 官方 | hostapd.* | 🧪 **EN** Theoretical · **中文** 待实测 |
 | Any Linux with `logread`+`ubus` | syslog-only | ⚠️ **EN** Events only, no device table · **中文** 仅事件,无设备列表 |
 
-**EN** — Go 1.21+. No cgo. Cross-compiles to any GOOS/GOARCH that runs OpenWrt.
-**中文** — Go 1.21+,不使用 cgo,可跨编译到任何 OpenWrt 支持的 GOOS/GOARCH。
+**EN** — Go 1.25+. No cgo. Cross-compiles to any GOOS/GOARCH that runs OpenWrt.
+**中文** — Go 1.25+,不使用 cgo,可跨编译到任何 OpenWrt 支持的 GOOS/GOARCH。
 
 ---
 
@@ -321,7 +323,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./cmd/argusd
 
 - [`ONLINE.md`](./ONLINE.md) — **EN** online decision deep-dive · **中文** 上线判定深度解析
 - [`OFFLINE.md`](./OFFLINE.md) — **EN** offline + cooldown analysis · **中文** 离线与冷却机制解析
-- [GoDoc](https://pkg.go.dev/github.com/uuxia/argus) — API reference · API 文档
+- [GoDoc](https://pkg.go.dev/github.com/xxl6097/argus) — API reference · API 文档
 
 ---
 
