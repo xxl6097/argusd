@@ -19,6 +19,28 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./cmd/argusd
 - **Keep code comments in Chinese.** The project uses Chinese for internal design notes; public API documentation is bilingual (Chinese + English).
 - **Match existing style.** Run `go fmt` and keep line widths sensible.
 - **Update docs.** If you change user-visible behavior, update `README.md`, `ONLINE.md`, or `OFFLINE.md` as appropriate.
+- **Update `CHANGELOG.md`.** Every user-visible change must add an entry under the `[Unreleased]` section, classified as `Added` / `Changed` / `Deprecated` / `Removed` / `Fixed` / `Security`. Purely internal refactors that don't change behavior may be omitted.
+
+## Release process (maintainers)
+
+Argus follows [Keep a Changelog](https://keepachangelog.com/) + [Semantic Versioning](https://semver.org/). To cut a release:
+
+1. Edit `CHANGELOG.md`:
+   - Move the accumulated `[Unreleased]` bullets into a new `[X.Y.Z] - YYYY-MM-DD` section.
+   - Keep the empty `[Unreleased]` header at the top.
+   - Update the link references at the bottom of the file.
+2. Commit the CHANGELOG edit: `docs: release vX.Y.Z`.
+3. Tag and push:
+   ```bash
+   git tag -a vX.Y.Z -m "vX.Y.Z"
+   git push origin vX.Y.Z
+   ```
+4. The `release.yml` workflow cross-compiles 10 OpenWrt-relevant targets, uploads tarballs + `SHA256SUMS`, and creates the GitHub Release with auto-generated notes. The CHANGELOG entry is the human-authored summary; the auto-generated notes serve as the commit-level detail.
+
+Version bump guidance:
+- **Major (X)** — breaking changes to `Event` / `Device` / `Config` / `Option` public API
+- **Minor (Y)** — backwards-compatible new features, new config fields (zero-value = old behavior)
+- **Patch (Z)** — bug fixes, doc updates, internal refactors
 
 ## Testing on a real router
 
@@ -58,4 +80,4 @@ Be kind. Be concise. Assume good faith.
 
 ---
 
-Questions? Open a discussion or ping [@uuxia](https://github.com/uuxia).
+Questions? Open a discussion or ping [@xxl6097](https://github.com/xxl6097).
