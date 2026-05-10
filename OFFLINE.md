@@ -41,6 +41,10 @@ logread -f (runSyslog goroutine)          每 PollInterval=1s
 
 **v0.4.0 起所有用户回调 panic-safe**：`EventOffline` 经 `safeInvokeEvent` 发射，用户回调 panic 通过 `onError` 上报为 `argus: EventHandler panicked: <value>`，不会杀死 worker。
 
+**v0.9.0+ 结构化日志**：`WithLogger(LoggerHandler)` 在 Stop timeout、syslog buffer overflow、fetch tick 失败时以 WARN / ERROR 级别触发（决策热路径不记录）。
+
+**v0.12.0+ 追踪 Hook**：`WithSpanRecorder` 在 `handleDisconnectHint` 整个 500 ms + ping + emit 链路上开 span，便于在 APM 里看到每一次断开判定的完整耗时分解。
+
 ---
 
 ## 系统日志中的离线事件

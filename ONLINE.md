@@ -39,6 +39,12 @@ logread -f  (runSyslog goroutine)          每 PollInterval=1s
 
 **v0.4.0 起所有用户回调 panic-safe**：`EventHandler` / `ErrorHandler` / `DecisionHandler` / `OnFetcherDetected` 的 panic 被 `defer recover` 捕获。`EventHandler` 的 panic 经 `onError` 上报（`argus: EventHandler panicked: <value>`）；其余类别静默吞掉避免递归。`diff` 产生的事件在 `stateMu` 释放**之后**逐条经 `safeInvokeEvent` 发射，用户回调不会阻塞或破坏共享状态。
 
+**v0.7.0+ 可插拔补全 & 指标**：`HintSource` 接口允许非 OpenWrt 固件注入自定义的 DHCP / ARP 补全来源（见 `DefaultHintSource{LeasesPath, ARPCommand, CacheTTL}`）；`argusmetrics` 子包零依赖累计决策 / 事件计数，可直接桥接 Prometheus / OTLP。
+
+**v0.9.0+ 结构化日志与 ConfigError**：`WithLogger(LoggerHandler)` 暴露 slog 风格 level / msg / attrs（仅在生命周期与异常路径触发，决策热路径不记录）；`Config.Validate` 返回 `*ConfigError`（Field/Value/Reason），通过 `errors.As` 可做字段级 UI 校验反馈。
+
+**v0.12.0+ 追踪 Hook**：`WithSpanRecorder(SpanRecorder)` 在 `Run` 与 `handleDisconnectHint` 开 span（500 ms 等待 + ping + emit 是唯一多阶段链路）；未注册时走共享 `noopFinish`，零分配。
+
 ---
 
 ## 系统日志中的上线事件序列

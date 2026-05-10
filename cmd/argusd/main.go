@@ -1,10 +1,19 @@
 // Command argusd is the reference consumer of the argus library.
+//
 // 启动时打印一次设备列表, 之后通过回调实时打印上线 / 离线 / 状态变更事件。
 // 同时监听 OpenWrt 系统日志, 捕获 WiFi 关联 / 断开 / DHCP 分配等底层事件。
+//
+// 除 stdout 日志外, 还同步注入:
+//   - argusmetrics.Counters 用于累计决策/事件计数 (SIGUSR1 打印快照到 stderr)
+//   - log/slog 结构化日志 hook (level/msg/attrs)
 //
 // 信号:
 //   - SIGINT  / SIGTERM: 优雅退出
 //   - SIGHUP:            停止并重启 Watcher (保留 known / cooldown / 已探测 Fetcher)
+//   - SIGUSR1:           打印一次 argusmetrics 快照到 stderr (不影响正在运行的 Watcher)
+//
+// 环境变量:
+//   - ARGUSD_DEBUG=1   启用 slog Debug 级别 + 展开决策 trace
 package main
 
 import (
@@ -12,18 +21,31 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
 
 	owrt "github.com/xxl6097/argus"
+	"github.com/xxl6097/argus/argusmetrics"
 )
 
 func main() {
 	log.SetFlags(log.LstdFlags)
 	owrt.SetupLocalTimezone()
+
+	// structured logger: slog.TextHandler → stderr (人可读, 同时可被 systemd 采集)
+	slogLevel := slog.LevelInfo
+	if os.Getenv("ARGUSD_DEBUG") == "1" {
+		slogLevel = slog.LevelDebug
+	}
+	slogger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slogLevel}))
+
+	// argusmetrics: 累计决策/事件次数, SIGUSR1 打印快照
+	metrics := argusmetrics.New()
 
 	// SIGINT / SIGTERM 触发整体退出
 	exitCtx, stopExit := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -34,11 +56,28 @@ func main() {
 	signal.Notify(sighup, syscall.SIGHUP)
 	defer signal.Stop(sighup)
 
+	// SIGUSR1 触发指标快照打印
+	sigusr1 := make(chan os.Signal, 1)
+	signal.Notify(sigusr1, syscall.SIGUSR1)
+	defer signal.Stop(sigusr1)
+
 	w := owrt.New(
 		owrt.OnFetcherDetected(func(k owrt.FetcherKind) {
 			log.Printf("已选择数据源: %s", k)
 		}),
-		owrt.WithDecisionHandler(onDecision),
+		owrt.WithDecisionHandler(func(d owrt.Decision) {
+			metrics.OnDecision(d)
+			if os.Getenv("ARGUSD_DEBUG") == "1" {
+				onDecision(d)
+			}
+		}),
+		owrt.WithLogger(func(ctx context.Context, level owrt.LogLevel, msg string, attrs ...owrt.LogAttr) {
+			sa := make([]slog.Attr, 0, len(attrs))
+			for _, a := range attrs {
+				sa = append(sa, slog.Any(a.Key, a.Value))
+			}
+			slogger.LogAttrs(ctx, slog.Level(level), msg, sa...)
+		}),
 	)
 
 	devices, err := w.List(exitCtx)
@@ -54,13 +93,18 @@ func main() {
 		}
 	}()
 
-	log.Println("开始监听设备状态变化, Ctrl+C 退出, SIGHUP 重启 ...")
+	log.Println("开始监听设备状态变化, Ctrl+C 退出, SIGHUP 重启, SIGUSR1 打印指标 ...")
 	generation := 1
 	for {
 		// 每一轮 Run 用一个派生 ctx, 可被 SIGHUP 单独取消而不影响 exitCtx
 		runCtx, cancelRun := context.WithCancel(exitCtx)
 		runDone := make(chan error, 1)
-		go func() { runDone <- w.Run(runCtx, onEvent, onError) }()
+		go func() {
+			runDone <- w.Run(runCtx, func(e owrt.Event) {
+				metrics.OnEvent(e)
+				onEvent(e)
+			}, onError)
+		}()
 
 		select {
 		case err := <-runDone:
@@ -68,6 +112,7 @@ func main() {
 			if err != nil && !errors.Is(err, context.Canceled) {
 				log.Fatalf("监听异常退出: %v", err)
 			}
+			printMetricsSnapshot(metrics)
 			log.Println("收到退出信号, 程序结束")
 			return
 
@@ -78,6 +123,7 @@ func main() {
 			stopCancel()
 			cancelRun()
 			<-runDone
+			printMetricsSnapshot(metrics)
 			log.Println("收到退出信号, 程序结束")
 			return
 
@@ -95,7 +141,29 @@ func main() {
 			log.Printf("[重启] 保留 %d 台已知设备, 冷却/抖动状态亦保留, 瞬态计数已重置", len(snap))
 			generation++
 			// 继续 for 循环, 开始下一轮 Run
+
+		case <-sigusr1:
+			// SIGUSR1: 打印当前指标快照, 不影响 Run
+			printMetricsSnapshot(metrics)
 		}
+	}
+}
+
+// printMetricsSnapshot 打印 argusmetrics 当前快照到 stderr, 按 key 字母序。
+func printMetricsSnapshot(m *argusmetrics.Counters) {
+	snap := m.Snapshot()
+	if len(snap) == 0 {
+		fmt.Fprintln(os.Stderr, "[metrics] (no decisions yet)")
+		return
+	}
+	keys := make([]string, 0, len(snap))
+	for k := range snap {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	fmt.Fprintln(os.Stderr, "[metrics] --- snapshot ---")
+	for _, k := range keys {
+		fmt.Fprintf(os.Stderr, "[metrics]   %-32s = %d\n", k, snap[k])
 	}
 }
 
@@ -132,6 +200,7 @@ func onSyslog(e owrt.SyslogEvent) {
 
 // onDecision 打印 Watcher 内部判定链路, 用于调试和观测。
 // 业务消费者通常不需要关心, 本示例打印是为了演示决策过程可见性。
+// 仅在 ARGUSD_DEBUG=1 时启用, 因为频率较高 (每秒几十行)。
 func onDecision(d owrt.Decision) {
 	ts := d.Time.Format("2006-01-02 15:04:05")
 	mac := strings.ToUpper(d.MAC)
