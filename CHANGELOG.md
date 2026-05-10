@@ -17,6 +17,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.0] - 2026-05-09
+
+Focus on **production-grade robustness**: user callbacks can no longer kill
+Watcher goroutines, the zero-cost `DecisionHandler` claim is now CI-backed,
+pkg.go.dev shows runnable examples, and the API stability contract is explicit.
+
+### Added · 新增
+
+- **Panic isolation for all user callbacks**
+  `EventHandler` / `ErrorHandler` / `DecisionHandler` / `OnFetcherDetected`
+  are now wrapped in `defer recover()`. A panic in user code:
+  - `EventHandler` — caught, reported to `onError` as
+    `"argus: EventHandler panicked: <value>"`, and does NOT kill the diff
+    goroutine. Subsequent events continue to flow.
+  - `ErrorHandler` — caught and silently swallowed (no recursion).
+  - `DecisionHandler` — caught and silently swallowed (hot path).
+  - `OnFetcherDetected` — caught and silently swallowed.
+  (`watcher.go`)
+
+- **`diff()` emits events after releasing `stateMu`**
+  Internally refactored to collect events into a `pending []Event` slice.
+  `Run` dispatches them via `safeInvokeEvent` AFTER unlocking the mutex.
+  Prior to this, a slow or panicking user callback would hold `stateMu`,
+  blocking `Known()`, `List()`, and the next poll tick.
+  (`watcher.go`)
+
+- **`example_test.go` — 6 runnable godoc examples**
+  Covers `New`, `Watcher.List`, `WithDecisionHandler`, `WithBaseline`,
+  `Config` tuning, and typed-error handling. pkg.go.dev now renders them
+  as "Try it" code blocks at the top of the package page.
+  (`example_test.go`)
+
+- **Benchmarks backing the zero-cost `DecisionHandler` claim**
+  - `BenchmarkEmitDecisionNil`: **1.0 ns/op, 0 allocs/op** on M4
+  - `BenchmarkEmitDecisionActive`: 33 ns/op, 0 allocs/op (defer+recover overhead)
+  - `BenchmarkSafeInvokeEventOK`: monitors panic-safe wrapper cost in normal path
+  Makes the docstring promise a CI-enforceable guarantee.
+  (`panic_test.go`)
+
+- **`STABILITY.md` — explicit API compatibility contract**
+  Lists "Stable" / "Evolving" / "Unstable" surface, documents the
+  **minor-zero-stable** policy for the 0.x line, and defines the 7-point
+  checklist required before tagging v1.0.
+  (`STABILITY.md`)
+
+### Changed · 变更
+
+- `diff()` signature: dropped `onEvent EventHandler`, now returns
+  `[]Event` of pending events. The `Run` caller dispatches via the new
+  panic-safe path. **This is an internal function**; no public API impact.
+- `handleDisconnectHint()` / `emitConnectEvent()` now take `onError` so
+  their direct `onEvent` calls can report callback panics. Internal-only.
+- `ScheduleOnFetcherDetected` callback invocation now also recovers from
+  panics (detector runs once under `sync.Once`).
+
+### Tests · 测试
+
+- `TestEventHandlerPanicDoesNotKillWatcher` — verifies panic capture and
+  error reporting.
+- `TestErrorHandlerPanicDoesNotRecurse` — verifies 1-second max duration
+  when `ErrorHandler` itself panics (no recursion).
+- `TestDecisionHandlerPanicSwallowed`
+- `TestDiffEventPanicContained` — verifies event-N panic does not block
+  event-N+1 delivery.
+
+All pass under `go test -race`.
+
+---
+
 ## [0.3.0] - 2026-05-09
 
 Focus on **API ergonomics & robustness** — no behavior change for existing users
@@ -214,7 +283,8 @@ Initial public release · 首次公开发布。
 Link references (kept at the bottom for readability).
 -->
 
-[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/xxl6097/argusd/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/xxl6097/argusd/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/xxl6097/argusd/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/xxl6097/argusd/releases/tag/v0.1.0

@@ -22,6 +22,8 @@ jobs:
         run: go test -race -coverprofile=coverage.out ./...
       - name: Coverage report
         run: go tool cover -func=coverage.out | tail -1
+      - name: Benchmarks (zero-cost DecisionHandler guard)
+        run: go test -bench=BenchmarkEmitDecisionNil -benchmem -run=^$ -count=1 ./...
 
   cross-compile:
     name: Cross-compile ${{ matrix.name }}

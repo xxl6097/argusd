@@ -81,7 +81,7 @@ func TestDiffCustomCooldownDuration(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.OfflineCooldown = time.Nanosecond // 极短冷却期
 
-	diff(map[string]Device{}, map[string]Device{}, map[string]int{},
+	diffEmit(map[string]Device{}, map[string]Device{}, map[string]int{},
 		map[string]Device{}, map[string]Device{}, cfg,
 		newDiffCtx(), nil, cooldown, map[string]lastEvent{}, func(Event) {}, nil)
 	if _, ok := cooldown["aa"]; ok {
@@ -103,11 +103,11 @@ func TestDiffCustomWeakThreshold(t *testing.T) {
 	cfg.WeakRSSI = -70
 	cfg.WeakMissThreshold = 2
 
-	diff(known, map[string]Device{}, misses, apSet, apSet, cfg, newDiffCtx(), p, cooldown, map[string]lastEvent{}, col.emit, nil)
+	diffEmit(known, map[string]Device{}, misses, apSet, apSet, cfg, newDiffCtx(), p, cooldown, map[string]lastEvent{}, col.emit, nil)
 	if len(col.events) != 0 {
 		t.Error("第 1 次不应触发")
 	}
-	diff(known, map[string]Device{}, misses, apSet, apSet, cfg, newDiffCtx(), p, cooldown, map[string]lastEvent{}, col.emit, nil)
+	diffEmit(known, map[string]Device{}, misses, apSet, apSet, cfg, newDiffCtx(), p, cooldown, map[string]lastEvent{}, col.emit, nil)
 	if len(col.events) != 1 || col.events[0].Kind != EventOffline {
 		t.Errorf("第 2 次应触发 EventOffline, got %+v", col.events)
 	}
@@ -128,7 +128,7 @@ func TestDiffFlapSuppressionBlocksRepeatOffline(t *testing.T) {
 
 	// 走默认 miss 计数路径, 连续 5 次未发现
 	for i := 0; i < 5; i++ {
-		diff(known, emptyCur, misses, emptyRaw, emptyRaw, DefaultConfig(), newDiffCtx(), nil, cooldown, lastAt, col.emit, nil)
+		diffEmit(known, emptyCur, misses, emptyRaw, emptyRaw, DefaultConfig(), newDiffCtx(), nil, cooldown, lastAt, col.emit, nil)
 	}
 	if len(col.events) != 0 {
 		t.Errorf("5s 前刚离线, FlapSuppressionWindow (30s) 内应压制, got %+v", col.events)
@@ -150,7 +150,7 @@ func TestDiffFlapSuppressionAllowsAfterWindow(t *testing.T) {
 	col := &eventCollector{}
 
 	for i := 0; i < 5; i++ {
-		diff(known, emptyCur, misses, emptyRaw, emptyRaw, DefaultConfig(), newDiffCtx(), nil, cooldown, lastAt, col.emit, nil)
+		diffEmit(known, emptyCur, misses, emptyRaw, emptyRaw, DefaultConfig(), newDiffCtx(), nil, cooldown, lastAt, col.emit, nil)
 	}
 	if len(col.events) != 1 || col.events[0].Kind != EventOffline {
 		t.Errorf("超窗口后应正常触发 EventOffline, got %+v", col.events)
@@ -173,7 +173,7 @@ func TestDiffFlapSuppressionDisabled(t *testing.T) {
 	cfg.FlapSuppressionWindow = 0 // 关闭
 
 	for i := 0; i < 5; i++ {
-		diff(known, emptyCur, misses, emptyCur, emptyCur, cfg, newDiffCtx(), nil, cooldown, lastAt, col.emit, nil)
+		diffEmit(known, emptyCur, misses, emptyCur, emptyCur, cfg, newDiffCtx(), nil, cooldown, lastAt, col.emit, nil)
 	}
 	if len(col.events) != 1 {
 		t.Errorf("FlapSuppressionWindow=0 时不应压制, got %d events", len(col.events))
@@ -190,7 +190,7 @@ func TestDiffFlapSuppressionDifferentKindNotBlocked(t *testing.T) {
 	}
 	col := &eventCollector{}
 
-	diff(map[string]Device{}, cur, map[string]int{},
+	diffEmit(map[string]Device{}, cur, map[string]int{},
 		cur, cur, DefaultConfig(), newDiffCtx(), nil, map[string]time.Time{}, lastAt, col.emit, nil)
 	if len(col.events) != 1 || col.events[0].Kind != EventOnline {
 		t.Errorf("不同类型事件不应被压制, got %+v", col.events)
@@ -234,6 +234,17 @@ func (e *eventCollector) emit(ev Event) { e.events = append(e.events, ev) }
 
 func newDiffCtx() context.Context { return context.Background() }
 
+// diffEmit 测试辅助: 保留旧 diff(..., onEvent, onDecision) 签名以便现有用例复用,
+// 转发到新的 diff 收集器后再调用 onEvent。
+func diffEmit(known, cur map[string]Device, misses map[string]int, apRaw, apSet map[string]Device, cfg Config, ctx context.Context, prober Prober, cooldown map[string]time.Time, lastEventAt map[string]lastEvent, onEvent EventHandler, onDecision DecisionHandler) {
+	pending := diff(known, cur, misses, apRaw, apSet, cfg, ctx, prober, cooldown, lastEventAt, onDecision)
+	if onEvent != nil {
+		for _, ev := range pending {
+			onEvent(ev)
+		}
+	}
+}
+
 func TestDiffNewDeviceTriggersOnline(t *testing.T) {
 	known := map[string]Device{}
 	misses := map[string]int{}
@@ -242,7 +253,7 @@ func TestDiffNewDeviceTriggersOnline(t *testing.T) {
 		"aa": {MAC: "aa", IP: "1.1.1.1", Radio: "5G"},
 	}
 	col := &eventCollector{}
-	diff(known, cur, misses, cur, cur, DefaultConfig(), newDiffCtx(), nil, cooldown, map[string]lastEvent{}, col.emit, nil)
+	diffEmit(known, cur, misses, cur, cur, DefaultConfig(), newDiffCtx(), nil, cooldown, map[string]lastEvent{}, col.emit, nil)
 
 	if len(col.events) != 1 || col.events[0].Kind != EventOnline {
 		t.Errorf("新设备应产生 EventOnline, got %+v", col.events)
@@ -259,7 +270,7 @@ func TestDiffKnownDeviceUnchanged(t *testing.T) {
 	cooldown := map[string]time.Time{}
 	cur := map[string]Device{"aa": d}
 	col := &eventCollector{}
-	diff(known, cur, misses, cur, cur, DefaultConfig(), newDiffCtx(), nil, cooldown, map[string]lastEvent{}, col.emit, nil)
+	diffEmit(known, cur, misses, cur, cur, DefaultConfig(), newDiffCtx(), nil, cooldown, map[string]lastEvent{}, col.emit, nil)
 
 	if len(col.events) != 0 {
 		t.Errorf("无变化不应产生事件, got %+v", col.events)
@@ -272,7 +283,7 @@ func TestDiffChangeEvent(t *testing.T) {
 	cooldown := map[string]time.Time{}
 	cur := map[string]Device{"aa": {MAC: "aa", IP: "2.2.2.2"}}
 	col := &eventCollector{}
-	diff(known, cur, misses, cur, cur, DefaultConfig(), newDiffCtx(), nil, cooldown, map[string]lastEvent{}, col.emit, nil)
+	diffEmit(known, cur, misses, cur, cur, DefaultConfig(), newDiffCtx(), nil, cooldown, map[string]lastEvent{}, col.emit, nil)
 
 	if len(col.events) != 1 || col.events[0].Kind != EventChange {
 		t.Fatalf("IP 变化应触发 EventChange, got %+v", col.events)
@@ -292,7 +303,7 @@ func TestDiffOfflineAfterMisses(t *testing.T) {
 	col := &eventCollector{}
 	// 连续 5 次 diff, 第 5 次触发离线
 	for i := 0; i < 5; i++ {
-		diff(known, emptyCur, misses, emptyRaw, emptyRaw, DefaultConfig(), newDiffCtx(), nil, cooldown, map[string]lastEvent{}, col.emit, nil)
+		diffEmit(known, emptyCur, misses, emptyRaw, emptyRaw, DefaultConfig(), newDiffCtx(), nil, cooldown, map[string]lastEvent{}, col.emit, nil)
 	}
 	if len(col.events) != 1 || col.events[0].Kind != EventOffline {
 		t.Fatalf("第 5 次应触发 EventOffline, got %+v", col.events)
@@ -317,7 +328,7 @@ func TestDiffAPStillPresentSleeping(t *testing.T) {
 	p := fakeProber{reachable: map[string]bool{}}
 	col := &eventCollector{}
 	for i := 0; i < 10; i++ {
-		diff(known, emptyCur, misses, apSet, apSet, DefaultConfig(), newDiffCtx(), p, cooldown, map[string]lastEvent{}, col.emit, nil)
+		diffEmit(known, emptyCur, misses, apSet, apSet, DefaultConfig(), newDiffCtx(), p, cooldown, map[string]lastEvent{}, col.emit, nil)
 	}
 	if len(col.events) != 0 {
 		t.Errorf("RSSI 正常的息屏场景不应触发事件, got %+v", col.events)
@@ -338,11 +349,11 @@ func TestDiffAPPresentExtremelyWeak(t *testing.T) {
 	p := fakeProber{reachable: map[string]bool{}}
 	col := &eventCollector{}
 
-	diff(known, emptyCur, misses, apSet, apSet, DefaultConfig(), newDiffCtx(), p, cooldown, map[string]lastEvent{}, col.emit, nil)
+	diffEmit(known, emptyCur, misses, apSet, apSet, DefaultConfig(), newDiffCtx(), p, cooldown, map[string]lastEvent{}, col.emit, nil)
 	if len(col.events) != 0 {
 		t.Error("第 1 次不应触发")
 	}
-	diff(known, emptyCur, misses, apSet, apSet, DefaultConfig(), newDiffCtx(), p, cooldown, map[string]lastEvent{}, col.emit, nil)
+	diffEmit(known, emptyCur, misses, apSet, apSet, DefaultConfig(), newDiffCtx(), p, cooldown, map[string]lastEvent{}, col.emit, nil)
 	if len(col.events) != 1 || col.events[0].Kind != EventOffline {
 		t.Errorf("第 2 次极弱信号应触发 EventOffline, got %+v", col.events)
 	}
@@ -359,7 +370,7 @@ func TestDiffCooldownSuppressRepeatOffline(t *testing.T) {
 	emptyRaw := map[string]Device{}
 	col := &eventCollector{}
 	for i := 0; i < 5; i++ {
-		diff(known, emptyCur, misses, emptyRaw, emptyRaw, DefaultConfig(), newDiffCtx(), nil, cooldown, map[string]lastEvent{}, col.emit, nil)
+		diffEmit(known, emptyCur, misses, emptyRaw, emptyRaw, DefaultConfig(), newDiffCtx(), nil, cooldown, map[string]lastEvent{}, col.emit, nil)
 	}
 	if len(col.events) != 0 {
 		t.Errorf("冷却期内不应触发 EventOffline, got %+v", col.events)
@@ -379,7 +390,7 @@ func TestDiffCooldownSuppressWeakOnline(t *testing.T) {
 		"aa": {MAC: "aa", IP: "1.1.1.1", RSSI: -75},
 	}
 	col := &eventCollector{}
-	diff(known, cur, misses, cur, cur, DefaultConfig(), newDiffCtx(), nil, cooldown, map[string]lastEvent{}, col.emit, nil)
+	diffEmit(known, cur, misses, cur, cur, DefaultConfig(), newDiffCtx(), nil, cooldown, map[string]lastEvent{}, col.emit, nil)
 	if len(col.events) != 0 {
 		t.Errorf("冷却期内弱信号不应触发上线, got %+v", col.events)
 	}
@@ -398,7 +409,7 @@ func TestDiffCooldownStrongSignalClears(t *testing.T) {
 		"aa": {MAC: "aa", IP: "1.1.1.1", RSSI: -40},
 	}
 	col := &eventCollector{}
-	diff(known, cur, misses, cur, cur, DefaultConfig(), newDiffCtx(), nil, cooldown, map[string]lastEvent{}, col.emit, nil)
+	diffEmit(known, cur, misses, cur, cur, DefaultConfig(), newDiffCtx(), nil, cooldown, map[string]lastEvent{}, col.emit, nil)
 	if len(col.events) != 1 || col.events[0].Kind != EventOnline {
 		t.Errorf("强信号恢复应触发 EventOnline, got %+v", col.events)
 	}
@@ -413,7 +424,7 @@ func TestDiffCooldownExpiration(t *testing.T) {
 		"old": time.Now().Add(-120 * time.Second),
 		"new": time.Now(),
 	}
-	diff(map[string]Device{}, map[string]Device{}, map[string]int{},
+	diffEmit(map[string]Device{}, map[string]Device{}, map[string]int{},
 		map[string]Device{}, map[string]Device{}, DefaultConfig(),
 		newDiffCtx(), nil, cooldown, map[string]lastEvent{}, func(Event) {}, nil)
 	if _, ok := cooldown["old"]; ok {
@@ -625,7 +636,7 @@ func TestHandleConnectHintFastPath(t *testing.T) {
 func TestHandleDisconnectHintNotInKnown(t *testing.T) {
 	w := New(WithFetcher(staticFetcher{}), WithProber(nil))
 	col := &eventCollector{}
-	w.handleDisconnectHint(context.Background(), "aa:bb:cc:dd:ee:ff", col.emit)
+	w.handleDisconnectHint(context.Background(), "aa:bb:cc:dd:ee:ff", col.emit, nil)
 	if len(col.events) != 0 {
 		t.Error("不在 known 中应忽略")
 	}
@@ -638,7 +649,7 @@ func TestHandleDisconnectHintPingReachable(t *testing.T) {
 	w.known["aa:bb:cc:dd:ee:ff"] = Device{MAC: "aa:bb:cc:dd:ee:ff", IP: "1.1.1.1"}
 	w.misses["aa:bb:cc:dd:ee:ff"] = 2
 	col := &eventCollector{}
-	w.handleDisconnectHint(context.Background(), "aa:bb:cc:dd:ee:ff", col.emit)
+	w.handleDisconnectHint(context.Background(), "aa:bb:cc:dd:ee:ff", col.emit, nil)
 	if len(col.events) != 0 {
 		t.Error("ping 可达应不触发离线")
 	}
@@ -656,7 +667,7 @@ func TestHandleDisconnectHintPingFailed(t *testing.T) {
 	w := New(WithFetcher(staticFetcher{}), WithProber(p))
 	w.known["aa:bb:cc:dd:ee:ff"] = Device{MAC: "aa:bb:cc:dd:ee:ff", IP: "1.1.1.1"}
 	col := &eventCollector{}
-	w.handleDisconnectHint(context.Background(), "aa:bb:cc:dd:ee:ff", col.emit)
+	w.handleDisconnectHint(context.Background(), "aa:bb:cc:dd:ee:ff", col.emit, nil)
 	if len(col.events) != 1 || col.events[0].Kind != EventOffline {
 		t.Fatalf("应触发 EventOffline, got %+v", col.events)
 	}
@@ -694,7 +705,7 @@ func TestHandleDisconnectHintDedupesInFlight(t *testing.T) {
 	// Worker 1: 进入 500ms Sleep + ping 流程
 	done1 := make(chan struct{})
 	go func() {
-		w.handleDisconnectHint(context.Background(), "aa:bb:cc:dd:ee:ff", emit)
+		w.handleDisconnectHint(context.Background(), "aa:bb:cc:dd:ee:ff", emit, nil)
 		close(done1)
 	}()
 
@@ -712,7 +723,7 @@ func TestHandleDisconnectHintDedupesInFlight(t *testing.T) {
 
 	// Worker 2: 应在 worker 1 仍在 Sleep 时立即返回 (不进入 500ms 等待)
 	t2 := time.Now()
-	w.handleDisconnectHint(context.Background(), "aa:bb:cc:dd:ee:ff", emit)
+	w.handleDisconnectHint(context.Background(), "aa:bb:cc:dd:ee:ff", emit, nil)
 	if d := time.Since(t2); d > 100*time.Millisecond {
 		t.Errorf("第二个 hint 应立即返回, 实际耗时 %s (应远小于 500ms)", d)
 	}
@@ -811,7 +822,7 @@ func TestConfigDisableCooldownStopsSuppression(t *testing.T) {
 		"aa": {MAC: "aa", IP: "1.1.1.1", RSSI: -90, Radio: "5G"},
 	}
 	col := &eventCollector{}
-	diff(known, cur, misses, cur, cur, cfg, newDiffCtx(), nil, cooldown, map[string]lastEvent{}, col.emit, nil)
+	diffEmit(known, cur, misses, cur, cur, cfg, newDiffCtx(), nil, cooldown, map[string]lastEvent{}, col.emit, nil)
 	// 正常应触发 EventOnline (冷却期被禁用, 即使 RSSI 很弱)
 	if len(col.events) != 1 || col.events[0].Kind != EventOnline {
 		t.Errorf("DisableCooldown 时即使 RSSI 弱也应触发 EventOnline, got %+v", col.events)

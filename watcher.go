@@ -275,7 +275,48 @@ func (w *Watcher) emitDecision(kind DecisionKind, mac string, detail string) {
 	if w.onDecision == nil {
 		return
 	}
-	w.onDecision(Decision{Time: time.Now(), Kind: kind, MAC: mac, Detail: detail})
+	w.safeInvokeDecision(w.onDecision, Decision{Time: time.Now(), Kind: kind, MAC: mac, Detail: detail})
+}
+
+// safeInvokeEvent 以 panic-safe 方式调用 EventHandler, panic 通过 onError 上报。
+// 库假定用户回调可能 panic; 一次 panic 不应杀死 watcher 的任何 goroutine。
+// cb 为 nil 时直接返回 (内部调用前应先检查, 这里再兜底)。
+func (w *Watcher) safeInvokeEvent(cb EventHandler, onError ErrorHandler, e Event) {
+	if cb == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			w.reportCallbackPanic(onError, "EventHandler", r)
+		}
+	}()
+	cb(e)
+}
+
+// safeInvokeError panic-safe 调用 ErrorHandler; 它本身的 panic 只能吞掉 (避免递归)。
+func (w *Watcher) safeInvokeError(cb ErrorHandler, err error) {
+	if cb == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	cb(err)
+}
+
+// safeInvokeDecision panic-safe 调用 DecisionHandler, panic 被静默吞 (决策通道频率高,
+// 不值得为诊断回调做递归上报)。
+func (w *Watcher) safeInvokeDecision(cb DecisionHandler, d Decision) {
+	if cb == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	cb(d)
+}
+
+// reportCallbackPanic 把用户回调的 panic 以 error 形式上报给 onError。
+// onError 自身 panic 会被 safeInvokeError 吞掉, 避免递归。
+func (w *Watcher) reportCallbackPanic(onError ErrorHandler, which string, r any) {
+	err := fmt.Errorf("argus: %s panicked: %v", which, r)
+	w.safeInvokeError(onError, err)
 }
 
 // syslogHint 封装系统日志中提取的设备事件提示。
@@ -370,7 +411,10 @@ func (w *Watcher) EnsureFetcher(ctx context.Context) error {
 		w.fetcher = f
 		w.detectKind = kind
 		if w.onDetect != nil {
-			w.onDetect(kind)
+			func() {
+				defer func() { _ = recover() }()
+				w.onDetect(kind)
+			}()
 		}
 	})
 	return w.detectErr
@@ -467,20 +511,22 @@ func (w *Watcher) Run(ctx context.Context, onEvent EventHandler, onError ErrorHa
 		case <-ctx.Done():
 			return nil
 		case <-reportTicker.C:
-			if dropped := atomic.SwapUint64(&w.droppedHints, 0); dropped > 0 && onError != nil {
-				onError(fmt.Errorf("最近 30s 内因缓冲区满丢弃 %d 条 syslog 事件", dropped))
+			if dropped := atomic.SwapUint64(&w.droppedHints, 0); dropped > 0 {
+				w.safeInvokeError(onError, fmt.Errorf("最近 30s 内因缓冲区满丢弃 %d 条 syslog 事件", dropped))
 			}
 		case <-t.C:
 			apRaw, cur, err := w.fetchWithAPSet(ctx)
 			if err != nil {
-				if onError != nil {
-					onError(err)
-				}
+				w.safeInvokeError(onError, err)
 				continue
 			}
 			w.stateMu.Lock()
-			diff(w.known, cur, w.misses, apRaw, apRaw, w.cfg, ctx, w.prober, w.offlineCooldown, w.lastEventAt, onEvent, w.onDecision)
+			pending := diff(w.known, cur, w.misses, apRaw, apRaw, w.cfg, ctx, w.prober, w.offlineCooldown, w.lastEventAt, w.onDecision)
 			w.stateMu.Unlock()
+			// 在锁外发射事件: 用户回调 panic / 阻塞都不会影响 Watcher 共享状态。
+			for _, ev := range pending {
+				w.safeInvokeEvent(onEvent, onError, ev)
+			}
 		}
 	}
 }
@@ -508,8 +554,8 @@ func (w *Watcher) runSyslog(ctx context.Context, onError ErrorHandler) {
 			atomic.AddUint64(&w.droppedHints, 1)
 		}
 	}, onError)
-	if err != nil && ctx.Err() == nil && onError != nil {
-		onError(fmt.Errorf("系统日志监听异常退出: %w", err))
+	if err != nil && ctx.Err() == nil {
+		w.safeInvokeError(onError, fmt.Errorf("系统日志监听异常退出: %w", err))
 	}
 }
 
@@ -531,7 +577,7 @@ func (w *Watcher) runSyslogConsumer(ctx context.Context, onEvent EventHandler, o
 			go func(h syslogHint) {
 				defer func() { <-sem }()
 				if h.Disconnect {
-					w.handleDisconnectHint(ctx, h.MAC, onEvent)
+					w.handleDisconnectHint(ctx, h.MAC, onEvent, onError)
 				} else {
 					w.handleConnectHint(ctx, h, onEvent, onError)
 				}
@@ -547,7 +593,7 @@ func (w *Watcher) runSyslogConsumer(ctx context.Context, onEvent EventHandler, o
 // 入口处的 disconnectInFlight 集合保证只有第一个 worker 进入 500ms Sleep + ping
 // 流程, 后续重复 hint 直接发 DISCONNECT_SKIP_INFLIGHT 决策返回, 节省 ~2 × 1.5s
 // 的 worker 时间和一次冗余 ping。
-func (w *Watcher) handleDisconnectHint(ctx context.Context, mac string, onEvent EventHandler) {
+func (w *Watcher) handleDisconnectHint(ctx context.Context, mac string, onEvent EventHandler, onError ErrorHandler) {
 	w.emitDecision(DecisionDisconnectHintReceived, mac, "")
 
 	w.stateMu.Lock()
@@ -611,7 +657,7 @@ func (w *Watcher) handleDisconnectHint(ctx context.Context, mac string, onEvent 
 	w.stateMu.Unlock()
 
 	w.emitDecision(DecisionOfflineEmitted, mac, "via=syslog")
-	onEvent(Event{Time: now, Kind: EventOffline, Device: d})
+	w.safeInvokeEvent(onEvent, onError, Event{Time: now, Kind: EventOffline, Device: d})
 }
 
 // handleConnectHint 当系统日志报告设备接入 (WPA 完成 / MAC 表新增 / DHCP 分配) 时,
@@ -642,11 +688,11 @@ func (w *Watcher) handleConnectHint(ctx context.Context, h syslogHint, onEvent E
 		IP:       h.IP,
 		LastSeen: time.Now(),
 	}, hints[h.MAC])
-	w.emitConnectEvent(d, onEvent)
+	w.emitConnectEvent(d, onEvent, onError)
 }
 
 // emitConnectEvent 统一的上线事件发射点, 应用冷却期策略。
-func (w *Watcher) emitConnectEvent(d Device, onEvent EventHandler) {
+func (w *Watcher) emitConnectEvent(d Device, onEvent EventHandler, onError ErrorHandler) {
 	now := time.Now()
 	w.stateMu.Lock()
 	// 双重检查: handle 流程被 diff 并发覆盖时可能已加入 known
@@ -682,7 +728,7 @@ func (w *Watcher) emitConnectEvent(d Device, onEvent EventHandler) {
 	w.stateMu.Unlock()
 
 	w.emitDecision(DecisionConnectEmitted, d.MAC, fmt.Sprintf("IP=%s", d.IP))
-	onEvent(Event{Time: now, Kind: EventOnline, Device: d})
+	w.safeInvokeEvent(onEvent, onError, Event{Time: now, Kind: EventOnline, Device: d})
 }
 
 // drainHintsFor 清空 syslogHints 中属于指定 MAC 的后续事件, 其它 MAC 的放回。
@@ -729,16 +775,27 @@ func (w *Watcher) fetchWithAPSet(ctx context.Context) (apRaw map[string]Device, 
 // diff 比较前后两次快照, 修改 known/misses, 通过 onEvent 输出事件。
 // 综合 ping / AP 关联表 / ARP 状态 / RSSI 信号强度多维判断是否真正离线。
 // cooldown 防止弱信号区设备在上线/离线间快速抖动。
-func diff(known, cur map[string]Device, misses map[string]int, apRaw, apSet map[string]Device, cfg Config, ctx context.Context, prober Prober, cooldown map[string]time.Time, lastEventAt map[string]lastEvent, onEvent EventHandler, onDecision DecisionHandler) {
+// diff 比较前后两次快照, 修改 known/misses, 收集待发射的业务事件。
+// 综合 ping / AP 关联表 / ARP 状态 / RSSI 信号强度多维判断是否真正离线。
+// cooldown 防止弱信号区设备在上线/离线间快速抖动。
+//
+// 返回收集到的事件切片, 调用方在释放 stateMu 之后再交给用户 EventHandler
+// 分发, 避免用户回调阻塞或 panic 破坏共享状态。决策回调 onDecision
+// 仍在持锁期间同步触发 (频率高且需要与决策时序一致, 故不走 pending)。
+func diff(known, cur map[string]Device, misses map[string]int, apRaw, apSet map[string]Device, cfg Config, ctx context.Context, prober Prober, cooldown map[string]time.Time, lastEventAt map[string]lastEvent, onDecision DecisionHandler) []Event {
 	now := time.Now()
+	pending := make([]Event, 0, 4)
 
 	emitDecision := func(kind DecisionKind, mac, detail string) {
 		if onDecision != nil {
-			onDecision(Decision{Time: now, Kind: kind, MAC: mac, Detail: detail})
+			func() {
+				defer func() { _ = recover() }()
+				onDecision(Decision{Time: now, Kind: kind, MAC: mac, Detail: detail})
+			}()
 		}
 	}
 
-	// emitIfNotSuppressed 统一的事件发射: 除冷却期外再叠加 FlapSuppressionWindow 抑制,
+	// emitIfNotSuppressed 收集事件到 pending, 除冷却期外再叠加 FlapSuppressionWindow 抑制,
 	// 防止中等信号设备在短时间内连续触发同类事件。
 	emitIfNotSuppressed := func(kind EventKind, d Device) {
 		if !cfg.DisableFlapSuppression && cfg.FlapSuppressionWindow > 0 {
@@ -758,7 +815,7 @@ func diff(known, cur map[string]Device, misses map[string]int, apRaw, apSet map[
 		} else {
 			emitDecision(DecisionOfflineEmitted, d.MAC, fmt.Sprintf("via=poll RSSI=%d", d.RSSI))
 		}
-		onEvent(Event{Time: now, Kind: kind, Device: d})
+		pending = append(pending, Event{Time: now, Kind: kind, Device: d})
 	}
 
 	// 清理过期的冷却记录 (DisableCooldown=true 时 cooldown map 始终为空, 无开销)
@@ -807,7 +864,7 @@ func diff(known, cur map[string]Device, misses map[string]int, apRaw, apSet map[
 			emitIfNotSuppressed(EventOnline, d)
 		default:
 			if cs := changedFields(prev, d); len(cs) > 0 {
-				onEvent(Event{Time: now, Kind: EventChange, Device: d, Changes: cs})
+				pending = append(pending, Event{Time: now, Kind: EventChange, Device: d, Changes: cs})
 			}
 		}
 		known[mac] = d
@@ -893,6 +950,7 @@ func diff(known, cur map[string]Device, misses map[string]int, apRaw, apSet map[
 			delete(misses, mac)
 		}
 	}
+	return pending
 }
 
 // changedFields 列出同一 MAC 在两次快照间发生变化的关键字段;

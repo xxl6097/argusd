@@ -343,6 +343,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./cmd/argusd
 ## 更多文档 · More Docs
 
 - [`CHANGELOG.md`](./CHANGELOG.md) — **EN** version history (features & fixes) · **中文** 版本历史 (新特性 & Bug 修复)
+- [`STABILITY.md`](./STABILITY.md) — **EN** API stability guarantees & v1.0 criteria · **中文** API 稳定性承诺与 v1.0 条件
 - [`ONLINE.md`](./ONLINE.md) — **EN** online decision deep-dive · **中文** 上线判定深度解析
 - [`OFFLINE.md`](./OFFLINE.md) — **EN** offline + cooldown analysis · **中文** 离线与冷却机制解析
 - [GoDoc](https://pkg.go.dev/github.com/xxl6097/argus) — API reference · API 文档
