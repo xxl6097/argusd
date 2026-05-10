@@ -43,28 +43,40 @@
   **中文** — 通过实时日志(内核关联 / 断开 / Deauth / DHCP 分配)在 1-2 秒内识别上下线。
 
 - 🛡️ **多维离线判定 · Multi-dimensional offline detection**
-  **EN** — Four-layer decision: ICMP ping + AP association table + RSSI tiers + ARP `FAILED/INCOMPLETE`.
-  **中文** — 四层判定:ICMP 可达性 + AP 关联表感知(息屏保护) + RSSI 信号分级 + ARP 失败加速。
+  **EN** — Three-layer decision: ICMP ping filter + AP association table with RSSI tiers + ARP `FAILED/INCOMPLETE` shortcut.
+  **中文** — 三层判定:ICMP 可达性 + AP 关联表感知(息屏保护) & RSSI 信号分级 + ARP 失败加速。
 
 - 🌊 **抗抖动 · Flap suppression**
-  **EN** — 90 s cooldown plus 30 s same-kind suppression window eliminates weak-signal thrashing.
-  **中文** — 90 秒冷却期 + 30 秒同类事件压制,弱信号边缘设备不再反复上下线。
+  **EN** — 90 s cooldown plus 30 s same-kind suppression window eliminates weak-signal thrashing. Both independently toggleable via `Config.DisableCooldown` / `DisableFlapSuppression`.
+  **中文** — 90 秒冷却期 + 30 秒同类事件压制,弱信号边缘设备不再反复上下线。通过 `Config.DisableCooldown` / `DisableFlapSuppression` 可独立关闭任一机制。
 
 - 🧩 **纯标准库 · Pure stdlib, single static binary**
   **EN** — ~2.6 MB static binary (`CGO_ENABLED=0`, GOARCH=arm64). Drop into `/tmp` and run.
   **中文** — 纯 Go 标准库,静态编译,约 2.6 MB,直接丢到 OpenWrt 路由器 `/tmp` 即可运行。
 
 - 🔬 **可观测性 · Observability**
-  **EN** — Optional `DecisionHandler` exposes 16 internal branch decisions for tuning and debugging.
-  **中文** — 可选的决策回调暴露内部 16 种判定分支,调参与排障非常友好。
+  **EN** — Optional `DecisionHandler` exposes 17 internal branch decisions for tuning and debugging. Zero-cost (1.0 ns/op, 0 allocs) when not registered — CI-locked by `BenchmarkEmitDecisionNil`.
+  **中文** — 可选的决策回调暴露内部 17 种判定分支,调参与排障非常友好。未注册时完全零成本(1.0 ns/op,0 分配),由 CI 基准测试锁定。
 
 - 🔒 **安全硬化 · Security hardened**
   **EN** — IP regex + `net.ParseIP` double validation, interface whitelist — no command injection.
   **中文** — IP 双重校验(正则 + `net.ParseIP`)、hostapd 接口名白名单,杜绝命令注入。
 
 - 🧵 **并发安全 · Concurrency-safe**
-  **EN** — `sync.Mutex` protects shared state; `go test -race` clean.
-  **中文** — `sync.Mutex` 保护共享状态,`go test -race` 全部通过。
+  **EN** — `sync.Mutex` protects shared state; events emitted outside the lock; `go test -race` clean across 60+ tests and 9 lifecycle tests.
+  **中文** — `sync.Mutex` 保护共享状态,事件在锁外发射;60+ 测试 + 9 个生命周期测试均通过 `-race`。
+
+- 🛟 **Panic 隔离 · Panic-safe callbacks**
+  **EN** — User callbacks (`EventHandler` / `ErrorHandler` / `DecisionHandler`) are wrapped with `defer recover`. An `EventHandler` panic is reported via `onError` and does not kill any Watcher goroutine.
+  **中文** — 用户回调(`EventHandler` / `ErrorHandler` / `DecisionHandler`)全部被 `defer recover` 包裹。业务 handler panic 会经 `onError` 上报,不会杀死 Watcher 的任何 goroutine。
+
+- 🔄 **可热重载 · Hot-reload lifecycle (v0.5.0+)**
+  **EN** — `Watcher.Stop(ctx)` + re-run preserves `known` / cooldown / flap state across config reload (SIGHUP pattern). Real-router validated: 10 restarts on MT7981 show zero goroutine leak (Threads: 15 → 15).
+  **中文** — `Watcher.Stop(ctx)` + 再次 `Run()` 在热重载配置时保留 `known` / 冷却 / 抖动状态(SIGHUP 模式)。MT7981 真机验证:10 次重启后线程数 15 → 15,零泄漏。详见 [`docs/SIGHUP-real-device-test.md`](./docs/SIGHUP-real-device-test.md)。
+
+- 🎯 **Typed errors · Sentinel errors**
+  **EN** — `ErrHandlerRequired` / `ErrInvalidConfig` / `ErrNoFetcher` / `ErrFetchFailed` / `ErrAlreadyRunning`, all `errors.Is`-compatible.
+  **中文** — 5 种 sentinel 错误,全部支持 `errors.Is` 判别,便于程序化处理。
 
 ---
 
@@ -73,13 +85,17 @@
 ### 作为库使用 · Use as a library
 
 ```go
-import argus "github.com/xxl6097/argus"
+import (
+    "context"
+    "fmt"
+    "log"
+    "os/signal"
+    "syscall"
+
+    argus "github.com/xxl6097/argus"
+)
 
 func main() {
-    // EN: parse router's /etc/TZ into time.Local (so logs match wall clock).
-    // 中文: 解析 /etc/TZ 到 time.Local, 让日志时间和路由器一致。
-    argus.SetupLocalTimezone()
-
     ctx, stop := signal.NotifyContext(context.Background(),
         syscall.SIGINT, syscall.SIGTERM)
     defer stop()

@@ -14,26 +14,30 @@ logread -f  (runSyslog goroutine)          每 PollInterval=1s
   New Sta:<mac>       (MACTABLE_INSERT)    Fetcher.Fetch(ctx)
   AP SETKEYS DONE     (WPA_COMPLETE)       filterAlive(ping)
   DHCPACK <ip> <mac>  (DHCP_ACK)               │
-    │                                      diff(known, cur, apRaw)
+    │                                      stateMu.Lock
   syslogHint{Disconnect:false, MAC, IP}        │
-    │                                          │
+    │                                      diff(known, cur, apRaw) → pending []Event
     ▼  写入 syslogHints channel (cap=256)       │
-    │                                          │
+    │                                      stateMu.Unlock
   runSyslogConsumer goroutine                  │
-  (最多 16 并发 worker)                        │
-    │                                          │
-  handleConnectHint                      diff 发现新 MAC
+  (最多 16 并发 worker, 受 runWG 追踪)          │
+    │                                      for _, ev := range pending
+  handleConnectHint                              safeInvokeEvent(ev)   ← 锁外发射
     │                                          │
   emitConnectEvent ◄──────── 统一发射点 ───────►
     │
-  ① known 中？ → 跳过
+  ① known 中？ → 跳过 (CONNECT_SKIP_KNOWN)
   ② 冷却期 + 弱信号 → 静默 (COOLDOWN_SUPPRESS_ONLINE)
   ③ 冷却期 + 强信号/有线 → 清除冷却 (COOLDOWN_CLEARED)
   ④ 抖动窗口内同类 Online → 静默 (FLAP_SUPPRESS_ONLINE)
-  ⑤ 正常发射 → EventOnline (CONNECT_EMIT / via=poll)
+  ⑤ 正常发射 → safeInvokeEvent(EventOnline)  ← panic-safe
 ```
 
 两条通道通过 `stateMu` 串行化对 `known` / `misses` / `offlineCooldown` / `lastEventAt` 的访问。**哪条通道先感知，就先发射事件，另一条被 `known[mac]` 或 `FlapSuppressionWindow` 挡住。**
+
+**v0.5.0 起 Run 可重启**：`Stop(ctx)` + `Run(ctx)` 循环在同一个 `*Watcher` 上重复使用，`known` / `offlineCooldown` / `lastEventAt` / 探测到的 `Fetcher` **保留**，`misses` / `disconnectInFlight` / `syslogHints` / `droppedHints` **重置**。热重载配置时不会对已知设备重复发 `EventOnline`。
+
+**v0.4.0 起所有用户回调 panic-safe**：`EventHandler` / `ErrorHandler` / `DecisionHandler` / `OnFetcherDetected` 的 panic 被 `defer recover` 捕获。`EventHandler` 的 panic 经 `onError` 上报（`argus: EventHandler panicked: <value>`）；其余类别静默吞掉避免递归。`diff` 产生的事件在 `stateMu` 释放**之后**逐条经 `safeInvokeEvent` 发射，用户回调不会阻塞或破坏共享状态。
 
 ---
 
@@ -82,8 +86,9 @@ WatchSyslog(ctx, func(e SyslogEvent) {
     } else {
         return
     }
+    // 捕获当前 Run 的 channel 引用, 避免重启重建 channel 时竞争
     select {
-    case w.syslogHints <- h:          // channel 容量 256
+    case hints <- h:                           // channel 容量 256
     default:
         atomic.AddUint64(&w.droppedHints, 1)   // 满时丢弃, 30s 聚合上报
     }
@@ -94,32 +99,47 @@ WatchSyslog(ctx, func(e SyslogEvent) {
 
 ```go
 sem := make(chan struct{}, 16)    // 最多 16 个并发 handle goroutine
-for h := range w.syslogHints {
-    sem <- struct{}{}
-    go func(h syslogHint) {
-        defer func() { <-sem }()
-        if h.Disconnect {
-            w.handleDisconnectHint(ctx, h.MAC, onEvent)
-        } else {
-            w.handleConnectHint(ctx, h, onEvent, onError)
+for {
+    select {
+    case <-ctx.Done():
+        return
+    case h := <-hints:
+        select {
+        case sem <- struct{}{}:
+        case <-ctx.Done():
+            return
         }
-    }(h)
+        w.runWG.Add(1)                         // v0.5.0: Stop 可等该 worker 退出
+        go func(h syslogHint) {
+            defer w.runWG.Done()
+            defer func() { <-sem }()
+            if h.Disconnect {
+                w.handleDisconnectHint(ctx, h.MAC, onEvent, onError)
+            } else {
+                w.handleConnectHint(ctx, h, onEvent, onError)
+            }
+        }(h)
+    }
 }
 ```
 
-每个 hint 在独立 goroutine 中处理，`handleDisconnectHint` 的 500ms 等待不会阻塞后续事件；信号量 16 防止 goroutine 爆炸。
+每个 hint 在独立 goroutine 中处理，`handleDisconnectHint` 的 500ms 等待不会阻塞后续事件；信号量 16 防止 goroutine 爆炸。`runWG.Add(1)` 让 `Stop()` 能等所有 in-flight worker 优雅退出。
 
 ### 上线处理（`watcher.go:handleConnectHint`）
 
 ```go
-func (w *Watcher) handleConnectHint(ctx, h, onEvent, onError) {
-    emitDecision(CONNECT_HINT, mac, "IP=<dhcp_ip>")
+func (w *Watcher) handleConnectHint(ctx context.Context, h syslogHint,
+    onEvent EventHandler, onError ErrorHandler) {
+    w.emitDecision(DecisionConnectHintReceived, h.MAC, "IP="+h.IP)
 
     // ① 防重复: 已在 known 中 → 跳过
+    w.stateMu.Lock()
     if _, alreadyKnown := w.known[h.MAC]; alreadyKnown {
-        emitDecision(CONNECT_SKIP_KNOWN, mac, "")
+        w.stateMu.Unlock()
+        w.emitDecision(DecisionConnectSkippedKnown, h.MAC, "")
         return
     }
+    w.stateMu.Unlock()
 
     // ② 直接用 DHCP IP + /tmp/dhcp.leases + ip neigh 构建基础记录
     //    重要: 不调用 Fetcher.Fetch ——
@@ -132,7 +152,7 @@ func (w *Watcher) handleConnectHint(ctx, h, onEvent, onError) {
         LastSeen: time.Now(),
     }, hints[h.MAC])
 
-    w.emitConnectEvent(d, onEvent)
+    w.emitConnectEvent(d, onEvent, onError)
 }
 ```
 
@@ -143,42 +163,50 @@ func (w *Watcher) handleConnectHint(ctx, h, onEvent, onError) {
 所有上线事件——无论是通道 A 还是通道 B——最终都经过以下检查链：
 
 ```go
-func (w *Watcher) emitConnectEvent(d Device, onEvent EventHandler) {
+func (w *Watcher) emitConnectEvent(d Device, onEvent EventHandler, onError ErrorHandler) {
     now := time.Now()
+    w.stateMu.Lock()
 
     // ① 双重检查 known (handle 与 diff 并发时可能已加入)
     if _, already := w.known[d.MAC]; already {
+        w.stateMu.Unlock()
         emitDecision(CONNECT_SKIP_KNOWN, d.MAC, "double-check")
         return
     }
 
-    // ② 冷却期判定
-    if cdTime, inCD := w.offlineCooldown[d.MAC]; inCD &&
-        now.Sub(cdTime) < cfg.OfflineCooldown {
-        // 冷却期内 + RSSI 弱 → 静默更新 known, 刷新 cooldown
-        if d.RSSI != 0 && d.RSSI < cfg.CooldownReleaseRSSI {  // 默认 -65
-            w.offlineCooldown[d.MAC] = now    // 刷新: 防止自然过期后走完整离线
-            w.known[d.MAC] = d
-            emitDecision(COOLDOWN_SUPPRESS_ONLINE, d.MAC, "RSSI=...")
-            return
+    // ② 冷却期判定 (DisableCooldown=false 时才生效)
+    if !w.cfg.DisableCooldown {
+        if cdTime, inCD := w.offlineCooldown[d.MAC]; inCD &&
+            now.Sub(cdTime) < cfg.OfflineCooldown {
+            // 冷却期内 + RSSI 弱 → 静默更新 known, 刷新 cooldown
+            if d.RSSI != 0 && d.RSSI < cfg.CooldownReleaseRSSI {  // 默认 -65
+                w.offlineCooldown[d.MAC] = now    // 刷新: 防止自然过期后走完整离线
+                w.known[d.MAC] = d
+                w.stateMu.Unlock()
+                emitDecision(COOLDOWN_SUPPRESS_ONLINE, d.MAC, "RSSI=...")
+                return
+            }
+            // 冷却期内 + 强信号/有线 (RSSI=0) → 清除冷却, 继续发射
+            delete(w.offlineCooldown, d.MAC)
+            emitDecision(COOLDOWN_CLEARED, d.MAC, "RSSI=...")
         }
-        // 冷却期内 + 强信号/有线 (RSSI=0) → 清除冷却, 继续发射
-        delete(w.offlineCooldown, d.MAC)
-        emitDecision(COOLDOWN_CLEARED, d.MAC, "RSSI=...")
     }
 
     // ③ 抖动抑制: 窗口期内同类 Online → 静默更新
     if w.shouldSuppressFlap(d.MAC, EventOnline, now) {    // 30s 窗口
         w.known[d.MAC] = d
+        w.stateMu.Unlock()
         emitDecision(FLAP_SUPPRESS_ONLINE, d.MAC, "")
         return
     }
 
-    // ④ 正常发射
+    // ④ 正常发射: 先写 known + 释放锁, 再 panic-safe 调用 onEvent
     w.known[d.MAC] = d
     w.recordEvent(d.MAC, EventOnline, now)
+    w.stateMu.Unlock()
+
     emitDecision(CONNECT_EMIT, d.MAC, "IP=...")
-    onEvent(Event{Time: now, Kind: EventOnline, Device: d})
+    w.safeInvokeEvent(onEvent, onError, Event{Time: now, Kind: EventOnline, Device: d})
 }
 ```
 
@@ -206,35 +234,47 @@ fetchWithAPSet(ctx)
 
 ### 上线分支（`watcher.go:diff` 前半段）
 
+`diff` 在持有 `stateMu` 的情况下只**收集** `pending []Event`，不直接回调 `onEvent`。`Run` 在释放锁之后才逐条经 `safeInvokeEvent` 发射——见上面架构图和 Run 主循环。
+
 ```go
-for mac, d := range cur {
-    delete(misses, mac)
-    _, ok := known[mac]
-    switch {
-    case !ok:
-        // 冷却期检查
-        if cdTime, inCD := cooldown[mac]; inCD && now.Sub(cdTime) < cfg.OfflineCooldown {
-            if d.RSSI != 0 && d.RSSI < cfg.CooldownReleaseRSSI {
-                cooldown[mac] = now            // 刷新冷却
-                known[mac] = d                 // 静默更新
-                emitDecision(COOLDOWN_SUPPRESS_ONLINE, mac, "RSSI=...")
-                continue
+func diff(..., onDecision DecisionHandler) []Event {
+    pending := make([]Event, 0, 4)
+
+    // DisableCooldown=true 时 inCooldown / noteCooldown 是 no-op
+    inCooldown  := func(mac string) bool { ... }
+    noteCooldown := func(mac string)    { ... }
+
+    for mac, d := range cur {
+        delete(misses, mac)
+        _, ok := known[mac]
+        switch {
+        case !ok:
+            // 冷却期检查
+            if inCooldown(mac) {
+                if d.RSSI != 0 && d.RSSI < cfg.CooldownReleaseRSSI {
+                    cooldown[mac] = now            // 刷新冷却
+                    known[mac] = d                 // 静默更新
+                    emitDecision(COOLDOWN_SUPPRESS_ONLINE, mac, "RSSI=...")
+                    continue
+                }
+                delete(cooldown, mac)
+                emitDecision(COOLDOWN_CLEARED, mac, "RSSI=...")
             }
-            delete(cooldown, mac)
-            emitDecision(COOLDOWN_CLEARED, mac, "RSSI=...")
+            emitIfNotSuppressed(EventOnline, d)    // 含 FlapSuppressionWindow; append 到 pending
+        default:
+            // 已知设备: 检查字段变化 (不经 FlapSuppression)
+            if cs := changedFields(prev, d); len(cs) > 0 {
+                pending = append(pending, Event{Kind: EventChange, Device: d, Changes: cs})
+            }
         }
-        emitIfNotSuppressed(EventOnline, d)    // 含 FlapSuppressionWindow
-    default:
-        // 已知设备: 检查字段变化 (不经 FlapSuppression)
-        if cs := changedFields(prev, d); len(cs) > 0 {
-            onEvent(Event{Kind: EventChange, Device: d, Changes: cs})
-        }
+        known[mac] = d
     }
-    known[mac] = d
+    // ... (离线分支, 详见 OFFLINE.md) ...
+    return pending
 }
 ```
 
-轮询分支里的 `emitIfNotSuppressed` 内联实现了与 `emitConnectEvent` 相同的 `FlapSuppressionWindow` 逻辑，便于 diff 在持有 `stateMu` 的情况下直接判定。
+`emitIfNotSuppressed` 闭包内联实现了与 `emitConnectEvent` 相同的 `FlapSuppressionWindow` 逻辑；不同的是这里将事件 `append` 到 `pending`，由 `Run` 在锁外经 `safeInvokeEvent` 实际发射。
 
 ### 字段变更检测（`watcher.go:changedFields`）
 
@@ -261,7 +301,9 @@ for mac, d := range cur {
 - 冷却期内设备重新出现时：
   - `RSSI != 0 && RSSI < CooldownReleaseRSSI`（默认 -65）→ 静默更新 `known`，**刷新** cooldown 保持抑制，不触发 `EventOnline`
   - `RSSI >= CooldownReleaseRSSI` 或 `RSSI == 0`（有线设备无 RSSI 数据）→ 清除 cooldown，正常发射
-- diff 每轮开始会清理过期冷却记录（`watcher.go` line ~680）
+- diff 每轮开始会清理过期冷却记录
+
+**显式关闭**：`Config.DisableCooldown = true` 完全关闭冷却期机制（`inCooldown` 恒返回 false，`noteCooldown` 不写入）。零值默认启用。与 `OfflineCooldown` 数值不冲突——设置为 true 时忽略数值。
 
 **刷新策略的意义**：如果冷却期自然过期后设备仍处于弱信号，直接发射 `EventOnline` 会立即被下一次离线检测再次拉下线。刷新 cooldown 保持设备"隐身"直到信号恢复或彻底离开。
 
@@ -278,9 +320,9 @@ for mac, d := range cur {
 | 前一次事件类型相同（Online→Online / Offline→Offline） | 静默，不发射，不更新 `lastEventAt` |
 | 前一次事件类型不同（Online→Offline 或反之） | 正常发射并刷新 `lastEventAt` |
 | 未发射过任何事件 | 正常发射 |
-| `FlapSuppressionWindow == 0` | 完全关闭此机制 |
+| `FlapSuppressionWindow == 0` **或** `DisableFlapSuppression == true` | 完全关闭此机制 |
 
-`FlapSuppressionWindow` 与 `OfflineCooldown` 互补：前者抑制短时快闪，后者压制长时间弱信号。
+`FlapSuppressionWindow` 与 `OfflineCooldown` 互补：前者抑制短时快闪，后者压制长时间弱信号。`DisableFlapSuppression` 是 v0.3.0 新增的显式开关（与 `FlapSuppressionWindow=0` 等价，但语义更清晰，不依赖"零值 = 关闭"的约定）。
 
 ---
 
@@ -378,20 +420,29 @@ iPhone 亮屏: ping 恢复 → 进入 alive → diff 发现 mac 已在 known
 
 ---
 
-## 基线拉取（启动时）
+## 基线拉取（启动时 · 重启时）
 
 ```go
-// watcher.go:Run
+// watcher.go:Run (每次 Run 入口都会执行一次)
 baseline, _ := w.fetchByMAC(ctx)
+w.stateMu.Lock()
+// 重启语义: 先重置瞬态, 再合并 baseline
+w.misses = make(map[string]int)
+w.disconnectInFlight = make(map[string]struct{})
+w.syslogHints = make(chan syslogHint, 256)
+atomic.StoreUint64(&w.droppedHints, 0)
+// WithBaseline 的内容 + 上一轮 known 仍保留, fetch 结果覆盖同 MAC
 for mac, d := range baseline {
     w.known[mac] = d
 }
-// 启动后才开始 go runSyslog / go runSyslogConsumer / ticker 循环
+w.stateMu.Unlock()
+// 启动后才 go runSyslog / go runSyslogConsumer / ticker 循环 (都注册到 runWG)
 ```
 
-- 启动时已在线的设备直接进入 `known`，**不**触发 `EventOnline`
-- 之后通道 A / B 才开始产生事件
-- 业务侧若需获取启动时的设备列表：调用 `w.List(ctx)`（会应用冷却期过滤）
+- **首次 Run**：已在线的设备直接进入 `known`，**不**触发 `EventOnline`；之后通道 A / B 才开始产生事件
+- **重启 Run（v0.5.0+）**：`Stop()` → 再次 `Run()` 时，`known` / `offlineCooldown` / `lastEventAt` / 探测到的 `Fetcher` 保留，`misses` / `disconnectInFlight` / `syslogHints` channel / `droppedHints` 重置。热重载配置时**不会对已知设备重复发 `EventOnline`**
+- **初始化新 Watcher 时预填基线**：用 `WithBaseline(old.Known())` Option——例如在两个 Watcher 实例间切换或导入外部状态
+- 业务侧若需获取当前已知设备列表：调用 `w.List(ctx)`（会应用冷却期过滤）或 `w.Known()`（深拷贝快照）
 
 ---
 
@@ -450,7 +501,7 @@ channel 容量 256。满时 `select default` 丢弃新 hint，累加 `droppedHin
 
 ### 4. `handleConnectHint` 与 diff 并发发射同一 MAC
 
-两侧都持 `stateMu`。`emitConnectEvent` 和 diff 内联的发射逻辑都会二次检查 `known[d.MAC]`；先到者写入 `known` 并发射，后到者看到 `already` 直接 skip。
+`handleConnectHint` 通过 `emitConnectEvent` 在持 `stateMu` 的临界区内写 `known` 并判断 flap/cooldown；`diff` 同样持 `stateMu` 写 `known` 并收集到 `pending` 切片。两侧都会二次检查 `known[d.MAC]`：先到者写入并排队发射，后到者看到 `already` 直接 skip。最终 `Run` 在释放 `stateMu` 之后对 `pending` 逐条 `safeInvokeEvent`——用户回调的耗时/panic 都不会影响下一轮判定。
 
 ### 5. `logread -f` 进程退出
 
@@ -474,7 +525,7 @@ channel 容量 256。满时 `select default` 丢弃新 hint，累加 `droppedHin
 | `watcher.go` | `shouldSuppressFlap` / `recordEvent` | `FlapSuppressionWindow` 实现 |
 | `watcher.go` | `diff`（前半段） | 轮询发现新 MAC，同样走冷却 / 抖动抑制 |
 | `watcher.go` | `changedFields` | 字段差异检测，生成 `EventChange` |
-| `decision.go` | `DecisionKind` 常量 | 16 种决策点定义（CONNECT_*/COOLDOWN_*/FLAP_*） |
+| `decision.go` | `DecisionKind` 常量 | 17 种决策点定义（CONNECT_*/COOLDOWN_*/FLAP_*/DISCONNECT_*/POLL_*） |
 | `logwatch.go` | `IsConnect` | 判定 3 类事件为接入信号 |
 | `logwatch.go` | 正则定义 | `reNewSta` / `reWPA` / `reDHCPAck` |
 | `enrich.go` | `loadHints` / `applyHints` | `/tmp/dhcp.leases` + `ip neigh show` 补全 |
@@ -500,5 +551,7 @@ channel 容量 256。满时 `select default` 丢弃新 hint，累加 `droppedHin
 **核心设计**：
 1. **通道 A 不调 Fetcher**——避免 WiFi 握手期间 ubus 被 kill，用 DHCP/ARP 快速发射基础上线；通道 B 通过 `EventChange` 补齐字段。
 2. **`emitConnectEvent` 是唯一发射点**——所有 Online 都经它做冷却期 / 抖动抑制二次检查，防止通道 A / B 并发重复发射。
-3. **冷却期 + 抖动窗口互补**——前者压制长时间弱信号抖动（90s / -65 dBm），后者抑制中等信号快闪（30s 窗口）。
+3. **冷却期 + 抖动窗口互补**——前者压制长时间弱信号抖动（90s / -65 dBm），后者抑制中等信号快闪（30s 窗口）。`DisableCooldown` / `DisableFlapSuppression` 显式开关可独立关闭任一机制。
 4. **双通道互补**——任一失效，另一条保证最终一致性。
+5. **事件发射点在锁外（v0.4.0+）**——`diff` 只把事件收集到 `pending`，`Run` 释放 `stateMu` 后再经 `safeInvokeEvent` 逐条发射；用户回调 panic / 阻塞都不破坏共享状态。
+6. **Run 可重启（v0.5.0+）**——`Stop()` 优雅等待所有 goroutine（经 `runWG`）退出；再次 `Run()` 复用 Watcher 实例，保留 timeless 状态，避免热重载对已知设备重复发 Online。
