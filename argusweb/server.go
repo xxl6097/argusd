@@ -33,6 +33,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"net"
 	"net/http"
 	"sort"
 	"strings"
@@ -71,6 +72,36 @@ func WithOfflineMax(n int) Option {
 	return func(s *Server) { s.offlineMax = n }
 }
 
+// WithAliases attaches a persistent alias store. When set, `/api/devices`
+// rows carry an `alias` field (when present) and the dashboard prefers
+// the alias over hostname for display. Writes go through
+// `POST /api/aliases`, which is gated by the auth predicate (see
+// [WithWriteAuth]).
+//
+// Passing nil is a no-op (equivalent to the default). The store itself
+// is safe for concurrent use.
+func WithAliases(store *AliasStore) Option {
+	return func(s *Server) { s.aliases = store }
+}
+
+// AuthCheck decides whether an incoming HTTP request may mutate state
+// (currently: the alias write APIs). Return true to allow, false to
+// reject with 403. See [WithWriteAuth] for the default policy.
+type AuthCheck func(r *http.Request) bool
+
+// WithWriteAuth replaces the default write-API auth predicate. The
+// default allows requests whose remote address is loopback or an
+// RFC1918 private-network address — appropriate for a Web UI exposed
+// on a home LAN via `-listen=0.0.0.0:9099`. For more restrictive
+// deployments (reverse proxy with shared-secret header, Basic Auth,
+// etc.), provide a custom AuthCheck.
+//
+// The predicate is NOT applied to read endpoints (`GET /`, `GET
+// /api/devices`, `GET /api/events`, `GET /api/aliases`).
+func WithWriteAuth(check AuthCheck) Option {
+	return func(s *Server) { s.writeAuth = check }
+}
+
 // Server is an http.Handler that serves the argus dashboard + API.
 // Embed it in your own http.ServeMux or pass it directly to
 // http.ListenAndServe.
@@ -93,6 +124,15 @@ type Server struct {
 	offline    map[string]offlineEntry
 	offlineTTL time.Duration
 	offlineMax int
+
+	// aliases is an optional user-managed MAC -> friendly-name store.
+	// When non-nil, /api/devices rows carry an `alias` field and the
+	// dashboard prefers it for display. nil means "no alias feature".
+	aliases *AliasStore
+
+	// writeAuth gates mutating APIs (POST/DELETE /api/aliases). nil
+	// means the default LAN policy (loopback + RFC1918).
+	writeAuth AuthCheck
 }
 
 // offlineEntry stores the last-known Device shape at the moment it went
@@ -133,9 +173,13 @@ func NewServer(w *argus.Watcher, opts ...Option) *Server {
 	for _, opt := range opts {
 		opt(s)
 	}
+	if s.writeAuth == nil {
+		s.writeAuth = defaultLANAuth
+	}
 	s.mux.HandleFunc("/", s.handleIndex)
 	s.mux.HandleFunc("/api/devices", s.handleDevices)
 	s.mux.HandleFunc("/api/events", s.handleEvents)
+	s.mux.HandleFunc("/api/aliases", s.handleAliases)
 	return s
 }
 
@@ -233,8 +277,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 // stable JSON field names in STABILITY.md so consumers can script
 // against them.
 //
-// Status and OfflineAtMs are argusweb additions (since v0.13.3) and
-// are documented in STABILITY.md under the argusweb subpackage.
+// Status, OfflineAtMs, and Alias are argusweb additions and are
+// documented in STABILITY.md under the argusweb subpackage.
 type deviceRow struct {
 	MAC          string `json:"mac"`
 	IP           string `json:"ip,omitempty"`
@@ -247,8 +291,22 @@ type deviceRow struct {
 	RSSI         int    `json:"rssi,omitempty"`
 	Wired        bool   `json:"wired"`
 	LastSeenMs   int64  `json:"last_seen_ms,omitempty"`
-	Status       string `json:"status"`                   // "online" | "offline"
-	OfflineAtMs  int64  `json:"offline_at_ms,omitempty"`  // set when status=="offline"
+	Status       string `json:"status"`                  // "online" | "offline" (since v0.13.3)
+	OfflineAtMs  int64  `json:"offline_at_ms,omitempty"` // set when status=="offline"
+	Alias        string `json:"alias,omitempty"`         // user-defined name (since v0.14.0)
+}
+
+// applyAlias annotates the row with a user-defined friendly name when
+// one is configured. Returns the row unchanged if no alias store is
+// attached or the MAC has no entry.
+func (s *Server) applyAlias(row deviceRow) deviceRow {
+	if s.aliases == nil {
+		return row
+	}
+	if name := s.aliases.Lookup(row.MAC); name != "" {
+		row.Alias = name
+	}
+	return row
 }
 
 func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
@@ -298,7 +356,7 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 		if !d.LastSeen.IsZero() {
 			row.LastSeenMs = d.LastSeen.UnixMilli()
 		}
-		rows = append(rows, row)
+		rows = append(rows, s.applyAlias(row))
 		onlineCount++
 	}
 
@@ -324,7 +382,7 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 		if !d.LastSeen.IsZero() {
 			row.LastSeenMs = d.LastSeen.UnixMilli()
 		}
-		rows = append(rows, row)
+		rows = append(rows, s.applyAlias(row))
 		offlineCount++
 	}
 
@@ -415,4 +473,117 @@ func nonZeroTime(t time.Time) time.Time {
 		return time.Now()
 	}
 	return t
+}
+
+// handleAliases multiplexes GET / POST / DELETE on /api/aliases.
+//
+//	GET    /api/aliases                -> {"aliases": {MAC: name, ...}}
+//	POST   /api/aliases  {mac, name}   -> {"ok": true, "mac": MAC, "name": N}
+//	                                      empty name deletes the alias
+//	DELETE /api/aliases?mac=AA:BB:...  -> {"ok": true}
+//
+// All paths return JSON. Mutating methods are gated by s.writeAuth.
+func (s *Server) handleAliases(w http.ResponseWriter, r *http.Request) {
+	if s.aliases == nil {
+		http.Error(w, `{"error":"alias store not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		s.handleAliasesGet(w, r)
+	case http.MethodPost:
+		if !s.writeAuth(r) {
+			writeJSONErr(w, http.StatusForbidden, "write denied by auth policy")
+			return
+		}
+		s.handleAliasesSet(w, r)
+	case http.MethodDelete:
+		if !s.writeAuth(r) {
+			writeJSONErr(w, http.StatusForbidden, "write denied by auth policy")
+			return
+		}
+		s.handleAliasesDelete(w, r)
+	default:
+		w.Header().Set("Allow", "GET, POST, DELETE")
+		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (s *Server) handleAliasesGet(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(map[string]any{"aliases": s.aliases.All()})
+}
+
+func (s *Server) handleAliasesSet(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		MAC  string `json:"mac"`
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in); err != nil {
+		writeJSONErr(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	if err := s.aliases.Set(in.MAC, in.Name); err != nil {
+		writeJSONErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":   true,
+		"mac":  strings.ToUpper(normalizeMAC(in.MAC)),
+		"name": strings.TrimSpace(in.Name),
+	})
+}
+
+func (s *Server) handleAliasesDelete(w http.ResponseWriter, r *http.Request) {
+	mac := r.URL.Query().Get("mac")
+	if mac == "" {
+		writeJSONErr(w, http.StatusBadRequest, "mac query parameter required")
+		return
+	}
+	if err := s.aliases.Set(mac, ""); err != nil {
+		writeJSONErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
+func writeJSONErr(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+// defaultLANAuth is the default predicate used when the user doesn't
+// override WithWriteAuth. It allows requests whose remote address is
+// loopback or an RFC1918 private network — appropriate for a dashboard
+// bound to a home LAN. X-Forwarded-For is NOT consulted: if you front
+// Argus with a reverse proxy, supply your own AuthCheck.
+func defaultLANAuth(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() {
+		return true
+	}
+	return isRFC1918(ip)
+}
+
+func isRFC1918(ip net.IP) bool {
+	for _, cidr := range []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"} {
+		_, subnet, _ := net.ParseCIDR(cidr)
+		if subnet.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }

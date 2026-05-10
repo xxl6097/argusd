@@ -66,18 +66,29 @@ Types and functions used by **library consumers** — these must be preserved ac
   - `LabelExtractor func(Decision) []string`
 - Subpackage `argusweb` (stable from v0.13.0) — opt-in HTTP + SSE dashboard:
   - `argusweb.NewServer(*argus.Watcher, ...Option) *Server` — builds an `http.Handler`
-  - Options (since v0.13.3): `WithOfflineRetention(d time.Duration)`, `WithOfflineMax(n int)` — control how long and how many offline devices are retained in `/api/devices` (default 7 days, 512 entries)
+  - Options:
+    - (since v0.13.3) `WithOfflineRetention(d time.Duration)`, `WithOfflineMax(n int)` — how long and how many offline devices are retained in `/api/devices` (default 7 days, 512 entries)
+    - (since v0.14.0) `WithAliases(*AliasStore)` — attach a user-managed MAC-to-friendly-name map
+    - (since v0.14.0) `WithWriteAuth(func(*http.Request) bool)` — gate mutating APIs; default allows loopback + RFC1918
   - `(*Server).ServeHTTP` / `OnEvent(Event)` / `Shutdown(ctx)`
+  - `argusweb.NewAliasStore(path string) *AliasStore` + `(*AliasStore).Lookup / Set / All` (since v0.14.0); file-backed, case-insensitive MAC keys, atomic writes
   - HTTP surface: `GET /` (dashboard HTML), `GET /api/devices`
     (JSON snapshot keyed by stable JSON field names), `GET /api/events`
     (Server-Sent Events stream of Online/Offline/Change; event name
-    matches `EventKind.String()`)
+    matches `EventKind.String()`), `GET|POST|DELETE /api/aliases`
+    (MAC ↔ friendly-name CRUD; writes gated by `WithWriteAuth`)
   - `/api/devices` (stable wire shape since v0.13.3):
     - Body: `{"count": N, "online": N, "offline": N, "devices": [...]}`
-    - Row adds `status` (`"online"` | `"offline"`) and optional
-      `offline_at_ms` (unix-ms, set when status=="offline")
+    - Row includes `status` (`"online"` | `"offline"`), optional
+      `offline_at_ms` (unix-ms, set when status=="offline"), and
+      optional `alias` (user-defined name, since v0.14.0)
     - Offline entries are surfaced from an in-process cache fed by
       SSE `EventOffline` events and aged out per `WithOfflineRetention`
+  - `/api/aliases` (stable wire shape since v0.14.0):
+    - `GET` returns `{"aliases": {MAC(upper): name, ...}}`
+    - `POST {"mac": "...", "name": "..."}` sets/clears an alias (empty name deletes)
+    - `DELETE ?mac=...` deletes an alias
+    - `503` when the server was built without `WithAliases`
   - Zero third-party deps; single embedded HTML file with vanilla JS
 
 ### JSON serialization (stable from v0.6.0)

@@ -17,6 +17,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.14.0] - 2026-05-10
+
+User request: devices using iOS 15+/Android 10+ "private WiFi
+address" show up with their random MAC as both MAC *and* hostname —
+you should be able to give them a friendly name in the dashboard and
+have it stick.
+
+Purely additive; library API and semantics unchanged.
+
+### Added · 新增
+
+- **Persistent alias store** — `argusweb.NewAliasStore(path string) *AliasStore`
+  maintains a MAC → friendly-name map, backed by a JSON file
+  (atomic write-tmp + rename). Corrupt files are treated as empty
+  and repaired on the next successful write. Methods:
+  `Lookup(mac) string`, `Set(mac, name) error` (empty name deletes),
+  `All() map[string]string`. Empty-path constructor produces an
+  in-memory store (handy for tests).
+
+- **Server options** (all on `argusweb.Server`):
+  - `WithAliases(*AliasStore)` — attach a store; `/api/devices` rows
+    gain an optional `alias` field, dashboard prefers the alias for
+    display
+  - `WithWriteAuth(func(*http.Request) bool)` — gate mutating APIs;
+    default policy allows loopback and RFC1918 private networks,
+    which covers the common `-listen=0.0.0.0:9099` home-LAN case
+
+- **REST endpoints for aliases** — `GET|POST|DELETE /api/aliases`:
+  - `GET /api/aliases` → `{"aliases": {MAC(upper): name, ...}}`
+  - `POST /api/aliases` `{"mac": "...", "name": "..."}` sets or
+    clears (empty name deletes). Gated by write-auth.
+  - `DELETE /api/aliases?mac=...` deletes. Gated by write-auth.
+  - Without `WithAliases`, all three return `503`.
+
+- **Inline rename in the dashboard** — each row's hostname cell
+  shows a ✎ pencil button. Click → inline input → Enter to save
+  / Esc to cancel / "清除" clears the alias. The alias is shown in
+  accent color, with the original hostname kept as a grey hint in
+  parentheses. Works on mobile (card layout) too.
+
+- **`argusd -aliases=<path>`** CLI flag (default
+  `/etc/argusd/aliases.json`, empty disables persistence).
+
+- **12 regression tests** covering: case-insensitive lookup,
+  empty-name delete, disk persistence across instances, corrupt-file
+  recovery, 64-char name limit, `/api/devices` merge, `/api/aliases`
+  GET/POST/DELETE, 503 when store unconfigured, 403 when write-auth
+  denies, 400 on bad JSON, read-endpoint bypasses auth.
+
+### Documentation
+
+- `STABILITY.md`'s `argusweb` block extends the Stable wire surface
+  with the alias field on `/api/devices`, the `/api/aliases` endpoint
+  set, and the two new options.
+
+### Caveats
+
+- iOS/Android "private WiFi address" rotates the MAC over time. Aliases
+  are keyed by the MAC observed at the time of naming; when the OS
+  rotates, the new MAC has no alias until renamed again. This is
+  inherent to the privacy feature. Users who want stable names on
+  iOS can disable per-network MAC randomization under
+  Settings → WiFi → (network name) → Private WiFi Address.
+- The JSON store is best-effort: a crash between `rename` and
+  `fsync` (on power loss, not normal process exit) can revert the
+  last write. Fine for a dashboard affordance; don't treat it as a
+  system of record.
+
+---
+
 ## [0.13.3] - 2026-05-10
 
 User request: dashboard device list should show an explicit
@@ -1014,7 +1084,8 @@ Initial public release · 首次公开发布。
 Link references (kept at the bottom for readability).
 -->
 
-[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.13.3...HEAD
+[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/xxl6097/argusd/compare/v0.13.3...v0.14.0
 [0.13.3]: https://github.com/xxl6097/argusd/compare/v0.13.2...v0.13.3
 [0.13.2]: https://github.com/xxl6097/argusd/compare/v0.13.1...v0.13.2
 [0.13.1]: https://github.com/xxl6097/argusd/compare/v0.13.0...v0.13.1

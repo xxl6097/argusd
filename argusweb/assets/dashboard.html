@@ -72,6 +72,28 @@
   .rssi-weak    { color: var(--change); }
   .rssi-vweak   { color: var(--offline); }
 
+  /* Alias name (user-set); shown prominently; original hostname shrinks to a hint. */
+  .alias        { color: var(--accent); font-weight: 500; }
+  .orig-host    { color: var(--muted); font-size: 11px; }
+  .rename-btn   {
+    display: inline-block; margin-left: 6px; cursor: pointer;
+    color: var(--muted); font-size: 12px; user-select: none;
+    padding: 0 4px; border-radius: 3px; line-height: 1.4;
+  }
+  .rename-btn:hover { color: var(--accent); background: rgba(78,201,176,0.08); }
+  .rename-form  { display: inline-flex; gap: 4px; align-items: center; vertical-align: middle; }
+  .rename-form input {
+    background: #0e1014; color: var(--fg); border: 1px solid var(--line);
+    border-radius: 3px; padding: 2px 6px; font-size: 12px; width: 140px;
+    font-family: inherit;
+  }
+  .rename-form input:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+  .rename-form button {
+    background: none; border: 1px solid var(--line); color: var(--muted);
+    padding: 2px 6px; font-size: 11px; border-radius: 3px; cursor: pointer;
+  }
+  .rename-form button:hover { border-color: var(--accent); color: var(--accent); }
+
   /* Offline row: desaturated, so the eye is drawn to the online set first. */
   tr.is-offline td, .card-row.is-offline { opacity: 0.55; }
   tr.is-offline td.mac, .card-row.is-offline .cr-mac { opacity: 0.85; }
@@ -224,6 +246,7 @@
       if (isOff) offlineN++; else onlineN++;
       const tr = document.createElement("tr");
       if (isOff) tr.classList.add("is-offline");
+      tr.dataset.mac = d.mac;
       const statusPill = isOff
         ? '<span class="pill offline">离线 ' + esc(relativeTime(d.offline_at_ms)) + '</span>'
         : '<span class="pill online">在线</span>';
@@ -231,7 +254,7 @@
         '<td>' + statusPill + '</td>' +
         '<td class="mac">' + esc(d.mac) + '</td>' +
         '<td>' + esc(d.ip || "—") + '</td>' +
-        '<td class="host">' + esc(d.hostname || "—") + '</td>' +
+        '<td class="host">' + hostCell(d) + '</td>' +
         '<td class="' + rssiClass(d.rssi) + '">' + esc(rssiText(d)) + '</td>' +
         '<td>' + esc(linkText(d)) + '</td>';
       elBody.appendChild(tr);
@@ -243,7 +266,7 @@
       const isOff = d.status === "offline";
       const card = document.createElement("div");
       card.className = "card-row" + (isOff ? " is-offline" : "");
-      const host = d.hostname || "—";
+      card.dataset.mac = d.mac;
       const ip   = d.ip || "—";
       const statusPill = isOff
         ? '<span class="pill offline">离线 ' + esc(relativeTime(d.offline_at_ms)) + '</span>'
@@ -251,7 +274,7 @@
       card.innerHTML =
         '<div class="cr-mac">' + esc(d.mac) + '</div>' +
         '<div class="cr-status">' + statusPill + '</div>' +
-        '<div class="cr-host">' + esc(host) + ' <span class="ip">· ' + esc(ip) + '</span></div>' +
+        '<div class="cr-host">' + hostCell(d) + ' <span class="ip">· ' + esc(ip) + '</span></div>' +
         '<div class="cr-link">' + esc(linkText(d)) + '</div>' +
         '<div class="cr-rssi ' + rssiClass(d.rssi) + '">' + esc(rssiText(d)) + '</div>';
       elCards.appendChild(card);
@@ -259,6 +282,90 @@
 
     elCountOnline.textContent  = "在线 " + onlineN;
     elCountOffline.textContent = "离线 " + offlineN;
+  }
+
+  // hostCell builds the hostname cell with an optional alias prefix
+  // and a pencil (✎) button that toggles inline rename. MAC is in
+  // dataset so the rename form can post back to /api/aliases.
+  function hostCell(d) {
+    const hasAlias = d.alias && d.alias.length > 0;
+    const origHost = d.hostname || "";
+    let inner;
+    if (hasAlias) {
+      inner = '<span class="alias">' + esc(d.alias) + '</span>';
+      if (origHost && origHost !== d.mac && origHost.replace(/:/g,"") !== d.mac.replace(/:/g,"")) {
+        inner += ' <span class="orig-host">(' + esc(origHost) + ')</span>';
+      }
+    } else {
+      inner = esc(origHost || "—");
+    }
+    // Pencil button is always shown; click binds in global listener below.
+    inner += '<span class="rename-btn" data-action="rename" title="重命名 rename">✎</span>';
+    return inner;
+  }
+
+  // Delegate click events on pencil buttons to toggle inline rename form.
+  document.addEventListener("click", ev => {
+    const btn = ev.target.closest(".rename-btn");
+    if (!btn) return;
+    const host = btn.closest(".host, .cr-host");
+    if (!host) return;
+    const row  = btn.closest("[data-mac]");
+    if (!row) return;
+    openRenameForm(host, row.dataset.mac);
+  });
+
+  function openRenameForm(hostEl, mac) {
+    // Preserve the current content so Cancel can restore it.
+    const original = hostEl.innerHTML;
+    const currentAlias = hostEl.querySelector(".alias");
+    const initialValue = currentAlias ? currentAlias.textContent : "";
+
+    hostEl.innerHTML =
+      '<span class="rename-form">' +
+      '<input type="text" value="' + esc(initialValue) + '" maxlength="64" placeholder="别名 alias" />' +
+      '<button data-act="save">保存</button>' +
+      '<button data-act="clear">清除</button>' +
+      '<button data-act="cancel">取消</button>' +
+      '</span>';
+
+    const form  = hostEl.querySelector(".rename-form");
+    const input = form.querySelector("input");
+    input.focus();
+    input.select();
+
+    const restore = () => { hostEl.innerHTML = original; };
+    const submit  = async (name) => {
+      try {
+        const r = await fetch("/api/aliases", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({ mac, name }),
+        });
+        if (!r.ok) {
+          const body = await r.json().catch(() => ({}));
+          alert("保存失败 Save failed: " + (body.error || r.status));
+          restore();
+          return;
+        }
+        // Refresh triggers a full re-render with the new alias.
+        reloadDevices();
+      } catch (e) {
+        alert("网络错误 Network error: " + e.message);
+        restore();
+      }
+    };
+
+    form.addEventListener("click", ev => {
+      const b = ev.target.closest("button");
+      if (!b) return;
+      if (b.dataset.act === "save")   submit(input.value);
+      if (b.dataset.act === "clear")  submit("");
+      if (b.dataset.act === "cancel") restore();
+    });
+    input.addEventListener("keydown", ev => {
+      if (ev.key === "Enter")  submit(input.value);
+      if (ev.key === "Escape") restore();
+    });
   }
 
   // relativeTime renders a unix-ms timestamp as a compact Chinese-EN relative

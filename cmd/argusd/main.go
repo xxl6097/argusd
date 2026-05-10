@@ -42,6 +42,7 @@ import (
 
 func main() {
 	listen := flag.String("listen", "", "optional Web UI listen address (e.g. 127.0.0.1:9099); empty disables")
+	aliasesPath := flag.String("aliases", "/etc/argusd/aliases.json", "path to the Web UI alias store (MAC -> friendly name); empty keeps aliases in-memory only")
 	flag.Parse()
 
 	log.SetFlags(log.LstdFlags)
@@ -107,7 +108,10 @@ func main() {
 	var web *argusweb.Server
 	var httpSrv *http.Server
 	if *listen != "" {
-		web = argusweb.NewServer(w)
+		opts := []argusweb.Option{
+			argusweb.WithAliases(argusweb.NewAliasStore(*aliasesPath)),
+		}
+		web = argusweb.NewServer(w, opts...)
 		httpSrv = &http.Server{
 			Addr:         *listen,
 			Handler:      web,
