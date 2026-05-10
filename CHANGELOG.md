@@ -17,6 +17,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.0] - 2026-05-10
+
+Focus on **portability + observability**: make the enrichment pipeline
+pluggable for non-OpenWrt targets and ship a zero-dependency metrics
+collector that bridges cleanly to Prometheus / OpenTelemetry / StatsD.
+No breaking change.
+
+### Added · 新增
+
+- **`Hint` exported type** — was previously an unexported `hint` struct.
+  Now part of the Stable public surface so custom `HintSource`
+  implementations can return it directly. (`enrich.go`)
+
+- **`HintSource` interface** — single-method abstraction:
+  ```go
+  type HintSource interface {
+      Hints(ctx context.Context) map[string]Hint
+  }
+  ```
+  Consumers on non-OpenWrt systems (standard Linux, macOS dev loops,
+  embedded devices with custom lease databases) can now inject their
+  own hint source without forking internal enrichment logic.
+  (`enrich.go`)
+
+- **`DefaultHintSource` struct** — the existing `/tmp/dhcp.leases` +
+  `ip neigh show` reader exposed as a configurable struct:
+  - `LeasesPath string` — override default `/tmp/dhcp.leases`
+  - `ARPCommand []string` — override default `["ip", "neigh", "show"]`
+  - `CacheTTL time.Duration` — override default 5s cache window
+  Useful for custom firmwares that store leases elsewhere (e.g.
+  `/var/lib/misc/dnsmasq.leases` on stock OpenWrt 22+, or a shim
+  path in tests). (`enrich.go`)
+
+- **`WithHintSource(h HintSource) Option`** — functional option on
+  `argus.New` to inject a custom source. When set, Argus bypasses
+  `DefaultHintSource` entirely on every poll tick. (`watcher.go`)
+
+- **`argusmetrics` subpackage** — zero-dependency in-process counter
+  aggregator for `Decision` and `Event` streams:
+  - `argusmetrics.New() *Counters` — construct
+  - `Counters.OnDecision` satisfies `argus.DecisionHandler`; can be
+    passed directly to `argus.WithDecisionHandler`
+  - `Counters.OnEvent(Event)` — for business-level online/offline
+    counts
+  - `Counters.Snapshot() map[string]uint64` — stable string keys
+    (`CONNECT_EMIT`, `OFFLINE_EMIT`, `EVENT_ONLINE`, …) ready to
+    bridge to any metrics backend in ~10 lines
+  - `Counters.Reset()` — for tests
+  Hot path is **1.7 ns/op, 0 allocs** (atomic increment on a fixed
+  [128]uint64 indexed by `DecisionKind`). No Prometheus, OTel, or
+  StatsD dependency is pulled into Argus — consumers bridge in their
+  own layer. (`argusmetrics/argusmetrics.go`)
+
+- **`ExampleCounters`** — godoc example demonstrating the bridge
+  pattern (Watcher → Counters → Snapshot → external backend).
+  (`argusmetrics/example_test.go`)
+
+- **Tests**:
+  - `hintsource_test.go` — `TestWithHintSourceInjection`,
+    `TestDefaultHintSourceCustomPaths`, `TestDefaultHintSourceCache`
+  - `argusmetrics/argusmetrics_test.go` — concurrent-safety stress
+    (10000 atomic adds across 100 goroutines), Reset, benchmark
+
+### Changed · 变更
+
+- Internal `hint` → `Hint` rename; all call sites updated. No
+  behavior change; existing consumers that didn't depend on the
+  unexported name are unaffected.
+- `loadHints(ctx)` now delegates to a package-level
+  `*DefaultHintSource` so the legacy call path and the new
+  `HintSource` path share the same cache TTL semantics.
+
+### Documentation
+
+- `STABILITY.md` Stable surface extended with `Hint`, `HintSource`,
+  `DefaultHintSource`, `WithHintSource`, and the `argusmetrics`
+  subpackage (`Counters` + `OnDecision` + `OnEvent` + `Snapshot` +
+  `Reset`).
+
+---
+
 ## [0.6.0] - 2026-05-10
 
 Focus on **config ergonomics**: make the library trivial to drop into a
@@ -410,7 +491,8 @@ Initial public release · 首次公开发布。
 Link references (kept at the bottom for readability).
 -->
 
-[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/xxl6097/argusd/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/xxl6097/argusd/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/xxl6097/argusd/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/xxl6097/argusd/compare/v0.3.0...v0.4.0

@@ -219,6 +219,18 @@ func WithBaseline(baseline map[string]Device) Option {
 	}
 }
 
+// WithHintSource 注入自定义的 HintSource 实现。用于:
+//
+//   - 非 OpenWrt 平台 (Docker 容器 / 自研固件) 覆盖默认路径
+//   - 单元测试中注入固定 hints 避免依赖真实 /tmp/dhcp.leases
+//   - 从其他来源获取 hostname / IP (例如 DNS / DHCP server API)
+//
+// 传 nil 回退到包级默认 (DefaultHintSource 读 /tmp/dhcp.leases + ip neigh show)。
+// 导出于 v0.7.0。
+func WithHintSource(h HintSource) Option {
+	return func(w *Watcher) { w.hintSource = h }
+}
+
 // Watcher 是库的主入口, 管理一份"已知设备"的状态, 通过周期拉取识别变化。
 //
 //	w := argus.New()
@@ -243,6 +255,9 @@ type Watcher struct {
 	detectKind FetcherKind
 	detectErr  error
 	onDetect   func(FetcherKind)
+
+	// hintSource 提供 DHCP/ARP hints; nil 回退到包级 defaultHintInstance。
+	hintSource HintSource
 
 	// onDecision 观测内部决策的回调, 可为 nil (零成本)。
 	onDecision DecisionHandler
@@ -283,6 +298,15 @@ type Watcher struct {
 	// runCancel 是 Run 内部衍生 ctx 的 cancel, 由 Stop 触发; 无 Run 活跃时为 nil。
 	// 读写由 stateMu 保护。
 	runCancel context.CancelFunc
+}
+
+// loadHints 优先使用 Watcher 注入的 HintSource, 回退到包级默认。
+// 未导出 (内部路径), 使用方应通过 WithHintSource 注入自定义实现。
+func (w *Watcher) loadHints(ctx context.Context) map[string]Hint {
+	if w.hintSource != nil {
+		return w.hintSource.Hints(ctx)
+	}
+	return defaultHintInstance.Hints(ctx)
 }
 
 // emitDecision 安全触发决策回调。onDecision 为 nil 时完全不做任何事 (零成本)。
@@ -785,7 +809,7 @@ func (w *Watcher) handleConnectHint(ctx context.Context, h syslogHint, onEvent E
 	w.stateMu.Unlock()
 
 	// 立即用 DHCP/ARP hints 构建基础记录触发上线。后续 diff 会补齐 RSSI/Radio/SSID。
-	hints := loadHints(ctx)
+	hints := w.loadHints(ctx)
 	d := applyHints(Device{
 		MAC:      h.MAC,
 		IP:       h.IP,

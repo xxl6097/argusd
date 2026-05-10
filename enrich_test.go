@@ -19,7 +19,7 @@ short line
 		t.Fatal(err)
 	}
 
-	hints := map[string]hint{}
+	hints := map[string]Hint{}
 	loadDHCPLeases(path, hints)
 
 	// 期望 3 条解析成功
@@ -40,7 +40,7 @@ short line
 }
 
 func TestLoadDHCPLeasesMissingFile(t *testing.T) {
-	hints := map[string]hint{}
+	hints := map[string]Hint{}
 	loadDHCPLeases("/nonexistent/path/dhcp.leases", hints)
 	if len(hints) != 0 {
 		t.Error("不存在的文件应不影响 hints")
@@ -50,7 +50,7 @@ func TestLoadDHCPLeasesMissingFile(t *testing.T) {
 func TestApplyHints(t *testing.T) {
 	// 空字段时填入 hint
 	d := Device{MAC: "aa:bb:cc:dd:ee:ff"}
-	h := hint{IP: "192.168.1.1", Hostname: "host"}
+	h := Hint{IP: "192.168.1.1", Hostname: "host"}
 	got := applyHints(d, h)
 	if got.IP != "192.168.1.1" || got.Hostname != "host" {
 		t.Errorf("空字段应被填入: %+v", got)

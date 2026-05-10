@@ -19,6 +19,9 @@ Types and functions used by **library consumers** — these must be preserved ac
 - `Config` — *new fields may be added with zero-value-preserves-default semantics*
 - `Watcher` — method signatures
 - `Option`, `EventHandler`, `ErrorHandler`, `DecisionHandler`
+- `Hint` — single MAC's `{IP, Hostname}` enrichment payload
+- `HintSource` interface — injectable enrichment source (see `WithHintSource`)
+- `DefaultHintSource` — struct with configurable `LeasesPath` / `ARPCommand` / `CacheTTL`
 - Sentinel errors: `ErrHandlerRequired`, `ErrInvalidConfig`, `ErrNoFetcher`, `ErrFetchFailed`, `ErrAlreadyRunning`
 
 ### Constructors / constructor-like
@@ -26,7 +29,7 @@ Types and functions used by **library consumers** — these must be preserved ac
 - `New(opts ...Option) *Watcher`
 - `DefaultConfig() Config`
 - `Config.Validate() error`
-- All `WithXxx` / `OnXxx` options
+- All `WithXxx` / `OnXxx` options (including `WithHintSource` since v0.7.0)
 
 ### Watcher methods
 
@@ -45,6 +48,12 @@ Types and functions used by **library consumers** — these must be preserved ac
 - `DetectLocalLocation() *time.Location`
 - `EventKind.String() / .Label()`
 - Subpackage `argustest` — all exported names: `FixedFetcher{Devices, Err}` / `FakeProber{Reach, AllReachable}` and their methods. Intended for consumer unit tests.
+- Subpackage `argusmetrics` (stable from v0.7.0) — zero-dependency in-process counters:
+  - `argusmetrics.New() *Counters`
+  - `(*Counters).OnDecision(Decision)` — satisfies `argus.DecisionHandler`; hot path is 1.7 ns/op, 0 allocs
+  - `(*Counters).OnEvent(Event)`
+  - `(*Counters).Snapshot() map[string]uint64` — stable keys: `DecisionKind.String()` values + `EVENT_` prefix for event counts
+  - `(*Counters).Reset()`
 
 ### JSON serialization (stable from v0.6.0)
 
