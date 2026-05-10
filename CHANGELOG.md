@@ -17,6 +17,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.15.1] - 2026-05-10
+
+Dashboard UX patch: remove the dual-language EN/中文 labels (column
+headers, status pills, button text, prompts) and keep Chinese only.
+The bilingual headers were eating horizontal space and, on narrow
+desktop windows, pushing the Vendor column to wrap. Also fixes
+content-squeeze by truncating long cells with ellipsis and a
+`title=` tooltip showing the full string on hover.
+
+Library API / `/api/*` wire shape unchanged.
+
+### Changed · 变更
+
+- **Dashboard labels** now Chinese-only:
+  - 表头: `状态`, `MAC`, `IP`, `主机名`, `厂商`, `信号`, `类型`
+    (was `状态 · Status`, `厂商 · Vendor`, …)
+  - 状态 pill: `在线`, `离线 N分钟前`, `重连`, `抖动`, `变更`
+  - 连接状态: `已连接`, `重连中…`, `等待事件…`
+  - 按钮: `保存 / 取消 / 移除 / 清除`
+  - 模态框标题: `静态 IP` (was `静态 IP · Static IP`)
+  - 事件行/链路: `有线`, `重命名`, `别名`, `已静态分配`, `设为静态 IP`
+  - 顶部标题: `设备监控` (was `设备监控 · Device Monitor`)
+  - Footer removed the "local dashboard" subtitle; kept endpoint hints
+  (`MAC` / `IP` / `SSE` stay as acronyms — universal; not EN.)
+
+- **Table layout now fixed-width** (`table-layout: fixed`) with a
+  `<colgroup>` declaring explicit widths per column (status 90 px,
+  MAC 150 px, IP 150 px, host auto-stretch, vendor 140 px, RSSI
+  90 px, link 130 px). Long text no longer shoves adjacent columns.
+
+- **Long-cell truncation**: every table `<td>` and mobile
+  `.card-row` cell truncates with `text-overflow: ellipsis` on
+  a single line. Every cell carries a `title="<full text>"`
+  attribute so hovering (desktop) or long-pressing (iOS/Android)
+  reveals the full value. Applies to:
+  - Device rows: MAC / IP / hostname / vendor / RSSI / link type
+  - Event stream: detail column (previously wrapped to two lines
+    with `word-break: break-all`; now one-line + tooltip)
+  - Mobile cards: MAC, host, link, vendor (4 truncation points)
+
+- **Status pills** on offline rows now also carry the full
+  "离线于 <relative time>" in the `title`, so long durations
+  aren't cut off.
+
+### Removed · 移除
+
+- The `td.host { word-break: break-all }` rule (superseded by the
+  global truncation rule).
+- Footer's English subtitle `local dashboard`.
+
+---
+
 ## [0.15.0] - 2026-05-10
 
 User request: dashboard should show device vendor and let me set a
@@ -1209,7 +1261,8 @@ Initial public release · 首次公开发布。
 Link references (kept at the bottom for readability).
 -->
 
-[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.15.1...HEAD
+[0.15.1]: https://github.com/xxl6097/argusd/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/xxl6097/argusd/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/xxl6097/argusd/compare/v0.13.3...v0.14.0
 [0.13.3]: https://github.com/xxl6097/argusd/compare/v0.13.2...v0.13.3
