@@ -59,7 +59,7 @@ func (f HostapdFetcher) Fetch(ctx context.Context) ([]Device, error) {
 	if len(ifaces) == 0 {
 		ifs, err := listHostapdInterfaces(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("hostapd 接口探测失败: %w", err)
+			return nil, fmt.Errorf("detect hostapd interfaces: %w", err)
 		}
 		ifaces = ifs
 	}
@@ -143,7 +143,7 @@ func hostapdGetStatus(ctx context.Context, iface string) (hostapdStatus, error) 
 		return s, fmt.Errorf("ubus call %s get_status: %w", iface, err)
 	}
 	if err := json.Unmarshal(out, &s); err != nil {
-		return s, fmt.Errorf("解析 %s get_status JSON 失败: %w", iface, err)
+		return s, fmt.Errorf("parse %s get_status JSON: %w", iface, err)
 	}
 	return s, nil
 }

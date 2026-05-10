@@ -135,10 +135,10 @@ func WatchSyslog(ctx context.Context, onEvent SyslogHandler, onError ErrorHandle
 	cmd := exec.CommandContext(ctx, "logread", "-f")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("获取 logread stdout 失败: %w", err)
+		return fmt.Errorf("open logread stdout: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("启动 logread 失败: %w", err)
+		return fmt.Errorf("start logread: %w", err)
 	}
 
 	// 确保子进程和管道在函数返回时释放
@@ -166,10 +166,10 @@ func WatchSyslog(ctx context.Context, onEvent SyslogHandler, onError ErrorHandle
 		return nil
 	}
 	if scanErr != nil {
-		return fmt.Errorf("logread 扫描错误: %w", scanErr)
+		return fmt.Errorf("logread scan error: %w", scanErr)
 	}
 	if waitErr != nil {
-		return fmt.Errorf("logread 进程退出: %w", waitErr)
+		return fmt.Errorf("logread process exited: %w", waitErr)
 	}
 	return nil
 }

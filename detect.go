@@ -26,7 +26,7 @@ func DetectFetcher(ctx context.Context, timeout time.Duration) (Fetcher, Fetcher
 	}
 	services, err := listUbusServices(ctx, timeout)
 	if err != nil {
-		return nil, "", fmt.Errorf("无法读取 ubus 服务列表: %w", err)
+		return nil, "", fmt.Errorf("list ubus services: %w", err)
 	}
 
 	if contains(services, "ahsapd.sta") {
@@ -43,7 +43,7 @@ func DetectFetcher(ctx context.Context, timeout time.Duration) (Fetcher, Fetcher
 		return HostapdFetcher{Interfaces: hostapdIfaces, Timeout: timeout}, FetcherHostapd, nil
 	}
 
-	return nil, "", fmt.Errorf("未在 ubus 上找到 ahsapd.sta 或 hostapd.* 服务")
+	return nil, "", fmt.Errorf("no ahsapd.sta or hostapd.* service found on ubus")
 }
 
 func listUbusServices(ctx context.Context, timeout time.Duration) ([]string, error) {

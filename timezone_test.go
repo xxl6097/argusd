@@ -60,3 +60,28 @@ func TestDetectLocalLocationSafe(t *testing.T) {
 	// would race with any parallel test that reads time.Now().
 	_ = DetectLocalLocation()
 }
+
+func TestDetectLocalLocationWithTZEnv(t *testing.T) {
+	// Setting TZ should let DetectLocalLocation return a valid location.
+	t.Setenv("TZ", "CST-8")
+	loc := DetectLocalLocation()
+	if loc == nil {
+		t.Fatal("TZ=CST-8 should yield a non-nil Location")
+	}
+	// Verify POSIX-style offset inversion: CST-8 means UTC+8.
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).In(loc)
+	_, off := now.Zone()
+	if off != 8*3600 {
+		t.Errorf("CST-8 offset = %ds, want 28800", off)
+	}
+}
+
+func TestDetectLocalLocationFallsBackToIANA(t *testing.T) {
+	// Non-POSIX string like "UTC" falls through parsePosixTZ and should be
+	// handled by time.LoadLocation.
+	t.Setenv("TZ", "UTC")
+	loc := DetectLocalLocation()
+	if loc == nil {
+		t.Fatal("TZ=UTC should yield a non-nil Location")
+	}
+}

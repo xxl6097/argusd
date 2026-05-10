@@ -540,7 +540,7 @@ func (w *Watcher) List(ctx context.Context) ([]Device, error) {
 // ErrFetchFailed / ErrAlreadyRunning。
 func (w *Watcher) Run(ctx context.Context, onEvent EventHandler, onError ErrorHandler) error {
 	if onEvent == nil {
-		return fmt.Errorf("%w: onEvent 不能为 nil", ErrHandlerRequired)
+		return fmt.Errorf("%w: onEvent must not be nil", ErrHandlerRequired)
 	}
 	if err := w.cfg.Validate(); err != nil {
 		// err is already a *ConfigError that unwraps to ErrInvalidConfig.
@@ -558,7 +558,7 @@ func (w *Watcher) Run(ctx context.Context, onEvent EventHandler, onError ErrorHa
 	}
 	baseline, err := w.fetchByMAC(ctx)
 	if err != nil {
-		return fmt.Errorf("%w: 初始基线拉取失败: %v", ErrFetchFailed, err)
+		return fmt.Errorf("%w: baseline fetch: %v", ErrFetchFailed, err)
 	}
 	w.log(ctx, LogLevelInfo, "watcher starting",
 		LogAttr{Key: "fetcher", Value: string(w.detectKind)},
@@ -616,7 +616,7 @@ func (w *Watcher) Run(ctx context.Context, onEvent EventHandler, onError ErrorHa
 			return nil
 		case <-reportTicker.C:
 			if dropped := atomic.SwapUint64(&w.droppedHints, 0); dropped > 0 {
-				w.safeInvokeError(onError, fmt.Errorf("最近 30s 内因缓冲区满丢弃 %d 条 syslog 事件", dropped))
+				w.safeInvokeError(onError, fmt.Errorf("dropped %d syslog events in last 30s (buffer full)", dropped))
 				w.log(runCtx, LogLevelWarn, "syslog buffer overflow",
 					LogAttr{Key: "dropped", Value: dropped},
 					LogAttr{Key: "window_sec", Value: 30},
@@ -722,7 +722,7 @@ func (w *Watcher) runSyslog(ctx context.Context, onError ErrorHandler) {
 		}
 	}, onError)
 	if err != nil && ctx.Err() == nil {
-		w.safeInvokeError(onError, fmt.Errorf("系统日志监听异常退出: %w", err))
+		w.safeInvokeError(onError, fmt.Errorf("syslog watcher exited: %w", err))
 	}
 }
 

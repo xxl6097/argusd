@@ -55,11 +55,11 @@ func (f AhsapdFetcher) Fetch(ctx context.Context) ([]Device, error) {
 	}
 	out, err := exec.CommandContext(ctx, "ubus", "call", "ahsapd.sta", "getStaInfo").Output()
 	if err != nil {
-		return nil, fmt.Errorf("调用 ubus ahsapd.sta getStaInfo 失败: %w", err)
+		return nil, fmt.Errorf("ubus call ahsapd.sta getStaInfo: %w", err)
 	}
 	var r rawResp
 	if err := json.Unmarshal(out, &r); err != nil {
-		return nil, fmt.Errorf("解析 ubus 返回 JSON 失败: %w", err)
+		return nil, fmt.Errorf("parse ubus ahsapd.sta JSON: %w", err)
 	}
 
 	now := time.Now()

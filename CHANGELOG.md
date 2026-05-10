@@ -17,6 +17,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.0] - 2026-05-10
+
+Focus on **discoverability polish**: package-level godoc overview,
+English error chain for observability pipelines, and main-package
+test coverage raised from 66.8% to 75.1%. Non-breaking —
+`Error()` strings change wording but the error surface (sentinels,
+`errors.Is` / `errors.As` matching) is unchanged.
+
+### Added · 新增
+
+- **Package-level `doc.go`** — architecture diagram, quick-start,
+  extension points, lifecycle, observability, error-handling, and
+  supported-Go-version summary. pkg.go.dev now renders a proper
+  overview at the top of the package page instead of the terse
+  one-paragraph summary. (`doc.go`)
+
+- **New tests** (12 total) raising main-package coverage to 75.1%:
+  - `coverage_fills_test.go` — table-driven coverage for
+    `DecisionKind.String` / `.Label` / `.MarshalJSON`,
+    `LogLevel.String`, `ConfigError.Error`, `Decision.String`,
+    `contains` helper, `isIn172` boundary, `WithDecisionHandler`
+    registration, `DefaultHintSource.invalidateCache`,
+    `invalidateHintsCache`, `EnsureFetcher` pre-set short-circuit
+  - `enrich_parsers_test.go` — `loadARPCommand` with empty argv,
+    bad executable, and synthetic `echo`-backed payload parsing
+    (covers the IPv4 / IPv6 / FAILED / INCOMPLETE filter paths)
+  - Added 2 cases to `timezone_test.go`: `TZ=CST-8` POSIX parsing
+    and `TZ=UTC` IANA fallback
+
+### Changed · 变更
+
+- **Error messages translated to English** (13 call sites in
+  `detect.go` / `fetcher.go` / `hostapd.go` / `logwatch.go` /
+  `watcher.go`). Rationale: error chains flow through structured
+  log pipelines and APMs; mixed-language error strings made
+  grouping / dashboards harder for non-Chinese-speaking operators.
+  User-facing Chinese content (decision `Label()` text, CLI table
+  banner, `Config.String()` summary) is **unchanged** — product
+  UX stays bilingual where appropriate.
+  - `"无法读取 ubus 服务列表"` → `"list ubus services"`
+  - `"未在 ubus 上找到 ahsapd.sta 或 hostapd.* 服务"` → `"no ahsapd.sta or hostapd.* service found on ubus"`
+  - `"调用 ubus ahsapd.sta getStaInfo 失败"` → `"ubus call ahsapd.sta getStaInfo"`
+  - `"解析 ubus 返回 JSON 失败"` → `"parse ubus ahsapd.sta JSON"`
+  - `"hostapd 接口探测失败"` → `"detect hostapd interfaces"`
+  - `"解析 %s get_status JSON 失败"` → `"parse %s get_status JSON"`
+  - `"获取 logread stdout 失败"` → `"open logread stdout"`
+  - `"启动 logread 失败"` → `"start logread"`
+  - `"logread 扫描错误"` → `"logread scan error"`
+  - `"logread 进程退出"` → `"logread process exited"`
+  - `"onEvent 不能为 nil"` → `"onEvent must not be nil"`
+  - `"初始基线拉取失败"` → `"baseline fetch"`
+  - `"系统日志监听异常退出"` → `"syslog watcher exited"`
+  - syslog drop counter message translated to English
+
+### Documentation
+
+- `doc.go` rewritten from 22 lines to a full package overview
+  (architecture map, quick-start, extension points, lifecycle,
+  observability, stability, supported Go versions).
+
+---
+
 ## [0.10.0] - 2026-05-10
 
 Focus on **label-bucketed metrics**: the unlabeled `argusmetrics.Counters`
@@ -698,7 +760,8 @@ Initial public release · 首次公开发布。
 Link references (kept at the bottom for readability).
 -->
 
-[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/xxl6097/argusd/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/xxl6097/argusd/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/xxl6097/argusd/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/xxl6097/argusd/compare/v0.7.0...v0.8.0

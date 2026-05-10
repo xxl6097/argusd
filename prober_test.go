@@ -80,3 +80,14 @@ func TestICMPProberEmptyIP(t *testing.T) {
 		t.Error("空 IP 应返回 true")
 	}
 }
+
+func TestICMPProberZeroTimeoutRoundsUp(t *testing.T) {
+	// Zero Timeout rounds up to the 1s minimum; we only care that the call
+	// path is exercised, not the outcome (ping may need root).
+	p := ICMPProber{}
+	// 127.0.0.1 should be reachable on loopback without root; the test
+	// does not assert the return value because CI sandboxes vary.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = p.Reachable(ctx, "127.0.0.1")
+}
