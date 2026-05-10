@@ -17,6 +17,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.10.0] - 2026-05-10
+
+Focus on **label-bucketed metrics**: the unlabeled `argusmetrics.Counters`
+answers "how many OFFLINE events total?", but production observability
+pipelines usually need "how many OFFLINE events *per SSID*, *per band*,
+*per MAC*?" Previously consumers wrote a custom `DecisionHandler` with
+their own sharded map; v0.10.0 ships a standard implementation.
+
+No breaking change.
+
+### Added · 新增
+
+- **`argusmetrics.LabeledCounters`** — Prometheus-style `CounterVec`
+  equivalent, without the Prometheus dependency:
+  ```go
+  m := argusmetrics.NewLabeled([]string{"ssid", "band"}, extractor)
+  w := argus.New(argus.WithDecisionHandler(m.OnDecision))
+  // Snapshot keys: "CONNECT_EMIT|home|5G", "OFFLINE_EMIT|guest|2.4G", …
+  ```
+  - `NewLabeled(labels []string, extract LabelExtractor) *LabeledCounters`
+  - `OnDecision(Decision)` — **40 ns/op, 2 allocs** (mutex +
+    joined key); ~25× slower than the unlabeled 1.7 ns/op path,
+    still negligible for Argus's decision rate
+  - `Snapshot() map[string]uint64` — keys `"<kind>|<v1>|<v2>..."`,
+    consumers split on "|" when bridging to a backend with
+    structured labels
+  - `LabelNames() []string` — defensive copy for Prometheus
+    `CounterVec` declaration
+  - `Reset()` — for tests
+  - Arity mismatches from a broken `LabelExtractor` are silently
+    dropped (prevents cardinality leaks from buggy extractors)
+  (`argusmetrics/labeled.go`)
+
+- **`LabelExtractor`** type — `func(argus.Decision) []string`. Must
+  be cheap; called once per Decision.
+
+- **`ExampleLabeledCounters`** — godoc example with `// Output:`
+  directive demonstrating per-MAC bucketing. (`argusmetrics/example_test.go`)
+
+- **Tests** (`argusmetrics/labeled_test.go`, 7 tests):
+  - `TestLabeledCountersBasicKeying` — single label path
+  - `TestLabeledCountersMultiLabel` — multi-label keying
+  - `TestLabeledCountersArityMismatchDropped` — cardinality-leak guard
+  - `TestLabeledCountersNilExtractor` — equivalent to unlabeled
+  - `TestLabeledCountersConcurrentSafe` — 10 000 atomic adds / 50 goroutines
+  - `TestLabeledCountersReset`
+  - `TestLabeledCountersLabelNamesIsCopy` — defensive copy of label names
+  - `BenchmarkLabeledOnDecision` — 40 ns/op, 2 allocs on M4
+
+### Documentation
+
+- `STABILITY.md` Stable surface extended with `LabeledCounters` /
+  `NewLabeled` / `LabelExtractor` / `(*LabeledCounters).OnDecision` /
+  `Snapshot` / `LabelNames` / `Reset`.
+
+---
+
 ## [0.9.0] - 2026-05-10
 
 Focus on **observability polish**: structured logging hook and
@@ -641,7 +698,8 @@ Initial public release · 首次公开发布。
 Link references (kept at the bottom for readability).
 -->
 
-[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/xxl6097/argusd/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/xxl6097/argusd/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/xxl6097/argusd/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/xxl6097/argusd/compare/v0.6.0...v0.7.0

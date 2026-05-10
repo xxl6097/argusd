@@ -56,6 +56,13 @@ Types and functions used by **library consumers** — these must be preserved ac
   - `(*Counters).OnEvent(Event)`
   - `(*Counters).Snapshot() map[string]uint64` — stable keys: `DecisionKind.String()` values + `EVENT_` prefix for event counts
   - `(*Counters).Reset()`
+- Subpackage `argusmetrics.LabeledCounters` (stable from v0.10.0) — label-bucketed counters:
+  - `argusmetrics.NewLabeled(labels []string, extract LabelExtractor) *LabeledCounters`
+  - `(*LabeledCounters).OnDecision(Decision)` — 40 ns/op, 2 allocs (mutex + joined key)
+  - `(*LabeledCounters).Snapshot() map[string]uint64` — keys are `"<kind>|<v1>|<v2>..."`
+  - `(*LabeledCounters).LabelNames() []string`
+  - `(*LabeledCounters).Reset()`
+  - `LabelExtractor func(Decision) []string`
 
 ### JSON serialization (stable from v0.6.0)
 

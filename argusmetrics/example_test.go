@@ -42,3 +42,34 @@ func ExampleCounters() {
 	// EVENT_ONLINE = 1
 	// OFFLINE_EMIT = 1
 }
+
+// ExampleLabeledCounters shows per-MAC (or per-SSID, per-band, etc.)
+// decision bucketing. Use this when you want to answer "which device
+// flapped the most this hour?" without writing a custom
+// DecisionHandler.
+func ExampleLabeledCounters() {
+	m := argusmetrics.NewLabeled([]string{"mac"}, func(d argus.Decision) []string {
+		return []string{d.MAC}
+	})
+
+	m.OnDecision(argus.Decision{Kind: argus.DecisionConnectEmitted, MAC: "aa:bb:cc"})
+	m.OnDecision(argus.Decision{Kind: argus.DecisionConnectEmitted, MAC: "aa:bb:cc"})
+	m.OnDecision(argus.Decision{Kind: argus.DecisionConnectEmitted, MAC: "dd:ee:ff"})
+	m.OnDecision(argus.Decision{Kind: argus.DecisionOfflineEmitted, MAC: "aa:bb:cc"})
+
+	snap := m.Snapshot()
+
+	// Sort for stable godoc Output.
+	keys := make([]string, 0, len(snap))
+	for k := range snap {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Printf("%s = %d\n", k, snap[k])
+	}
+	// Output:
+	// CONNECT_EMIT|aa:bb:cc = 2
+	// CONNECT_EMIT|dd:ee:ff = 1
+	// OFFLINE_EMIT|aa:bb:cc = 1
+}
