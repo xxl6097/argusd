@@ -268,6 +268,17 @@ type Watcher struct {
 	// droppedHints 记录因 syslogHints channel 已满而丢弃的事件数,
 	// 周期性通过 onError 报告。
 	droppedHints uint64
+
+	// --- Run 生命周期协调 ---
+	// running 原子标志, 保证同一 Watcher 任意时刻只有一个活跃 Run;
+	// Run 入口用 CompareAndSwap(false, true) 抢占, defer 归零。
+	running atomic.Bool
+	// runWG 跟踪 Run 期间启动的所有 goroutine (syslog / consumer / hint worker),
+	// Run 的 defer 会 Wait 它归零, Stop 也 Wait 它以实现优雅停止。
+	runWG sync.WaitGroup
+	// runCancel 是 Run 内部衍生 ctx 的 cancel, 由 Stop 触发; 无 Run 活跃时为 nil。
+	// 读写由 stateMu 保护。
+	runCancel context.CancelFunc
 }
 
 // emitDecision 安全触发决策回调。onDecision 为 nil 时完全不做任何事 (零成本)。
@@ -467,11 +478,17 @@ func (w *Watcher) List(ctx context.Context) ([]Device, error) {
 //
 // 仅在初始基线拉取失败时返回 error, ctx 取消时返回 nil。
 //
-// Watcher 不支持多次 Run: 自动探测的 Fetcher 会被 sync.Once 缓存, 且 known/misses/
-// cooldown 状态在 Run 返回后仍保留。如需重新启动, 请创建新的 Watcher。
+// 并发与生命周期:
+//   - 同一 Watcher 在任意时刻只能有一个 Run 活跃; 并发调用 Run 的后来者
+//     会立即返回 ErrAlreadyRunning。先调用 Stop 或等当前 Run 返回后, 可以
+//     再次 Run。
+//   - Run 返回时保留 known / offlineCooldown / lastEventAt 和探测缓存的
+//     Fetcher / detectKind, 支持重启复用。
+//   - Run 入口会重置瞬态状态 (misses / disconnectInFlight / droppedHints /
+//     syslogHints channel), 避免上一轮遗留影响新一轮判定。
 //
 // 错误可通过 errors.Is 判别: ErrHandlerRequired / ErrInvalidConfig / ErrNoFetcher /
-// ErrFetchFailed。
+// ErrFetchFailed / ErrAlreadyRunning。
 func (w *Watcher) Run(ctx context.Context, onEvent EventHandler, onError ErrorHandler) error {
 	if onEvent == nil {
 		return fmt.Errorf("%w: onEvent 不能为 nil", ErrHandlerRequired)
@@ -479,6 +496,11 @@ func (w *Watcher) Run(ctx context.Context, onEvent EventHandler, onError ErrorHa
 	if err := w.cfg.Validate(); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidConfig, err)
 	}
+	if !w.running.CompareAndSwap(false, true) {
+		return ErrAlreadyRunning
+	}
+	defer w.running.Store(false)
+
 	if err := w.EnsureFetcher(ctx); err != nil {
 		return err // EnsureFetcher 已 wrap ErrNoFetcher
 	}
@@ -486,18 +508,43 @@ func (w *Watcher) Run(ctx context.Context, onEvent EventHandler, onError ErrorHa
 	if err != nil {
 		return fmt.Errorf("%w: 初始基线拉取失败: %v", ErrFetchFailed, err)
 	}
-	// 将基线填入 watcher state (WithBaseline 的内容保持, 新拉取覆盖同 MAC)
+
+	// 重启语义: 重置瞬态, 保留 timeless 状态; 衍生内部 ctx 供 Stop 触发。
+	runCtx, cancel := context.WithCancel(ctx)
 	w.stateMu.Lock()
+	w.misses = make(map[string]int)
+	w.disconnectInFlight = make(map[string]struct{})
+	w.syslogHints = make(chan syslogHint, 256)
+	atomic.StoreUint64(&w.droppedHints, 0)
+	// 将基线填入 watcher state (WithBaseline 的内容保持, 新拉取覆盖同 MAC)
 	for mac, d := range baseline {
 		w.known[mac] = d
 	}
+	w.runCancel = cancel
 	w.stateMu.Unlock()
 
+	defer func() {
+		cancel()
+		w.stateMu.Lock()
+		w.runCancel = nil
+		w.stateMu.Unlock()
+		// 等所有 Run 期间启动的 goroutine 退出, 避免跨 Run 泄漏。
+		w.runWG.Wait()
+	}()
+
 	// 启动系统日志监听 goroutine
-	go w.runSyslog(ctx, onError)
+	w.runWG.Add(1)
+	go func() {
+		defer w.runWG.Done()
+		w.runSyslog(runCtx, onError)
+	}()
 
 	// 启动 syslog hint 消费 goroutine (独立于主轮询, 避免 500ms 阻塞主循环)
-	go w.runSyslogConsumer(ctx, onEvent, onError)
+	w.runWG.Add(1)
+	go func() {
+		defer w.runWG.Done()
+		w.runSyslogConsumer(runCtx, onEvent, onError)
+	}()
 
 	t := time.NewTicker(w.cfg.PollInterval)
 	defer t.Stop()
@@ -508,20 +555,20 @@ func (w *Watcher) Run(ctx context.Context, onEvent EventHandler, onError ErrorHa
 
 	for {
 		select {
-		case <-ctx.Done():
+		case <-runCtx.Done():
 			return nil
 		case <-reportTicker.C:
 			if dropped := atomic.SwapUint64(&w.droppedHints, 0); dropped > 0 {
 				w.safeInvokeError(onError, fmt.Errorf("最近 30s 内因缓冲区满丢弃 %d 条 syslog 事件", dropped))
 			}
 		case <-t.C:
-			apRaw, cur, err := w.fetchWithAPSet(ctx)
+			apRaw, cur, err := w.fetchWithAPSet(runCtx)
 			if err != nil {
 				w.safeInvokeError(onError, err)
 				continue
 			}
 			w.stateMu.Lock()
-			pending := diff(w.known, cur, w.misses, apRaw, apRaw, w.cfg, ctx, w.prober, w.offlineCooldown, w.lastEventAt, w.onDecision)
+			pending := diff(w.known, cur, w.misses, apRaw, apRaw, w.cfg, runCtx, w.prober, w.offlineCooldown, w.lastEventAt, w.onDecision)
 			w.stateMu.Unlock()
 			// 在锁外发射事件: 用户回调 panic / 阻塞都不会影响 Watcher 共享状态。
 			for _, ev := range pending {
@@ -531,8 +578,56 @@ func (w *Watcher) Run(ctx context.Context, onEvent EventHandler, onError ErrorHa
 	}
 }
 
+// Stop 优雅停止当前 Run, 等待所有 in-flight goroutine (syslog / consumer /
+// hint worker) 退出或 stopCtx 超时。
+//
+// 约定:
+//   - 幂等: 没有 Run 在运行时立即返回 nil。
+//   - 可从任意 goroutine 调用, 包括与 Run 并发。
+//   - stopCtx 超时返回 context.DeadlineExceeded; 此时内部 ctx 已取消, 未退出的
+//     goroutine 会自行清理, 但 Run 本身可能尚未返回。
+//   - Stop 后可以再次 Run; 瞬态状态 (misses / disconnectInFlight / syslogHints /
+//     droppedHints) 会在 Run 入口重置, timeless 状态 (known / offlineCooldown /
+//     lastEventAt) 保留。
+//
+// 典型用法 (SIGHUP 热重载配置):
+//
+//	sighup := make(chan os.Signal, 1)
+//	signal.Notify(sighup, syscall.SIGHUP)
+//	for {
+//	    go w.Run(ctx, onEvent, onError)
+//	    <-sighup
+//	    stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+//	    w.Stop(stopCtx)
+//	    cancel()
+//	    // 用新配置继续下一轮
+//	}
+func (w *Watcher) Stop(stopCtx context.Context) error {
+	w.stateMu.Lock()
+	cancel := w.runCancel
+	w.stateMu.Unlock()
+	if cancel == nil {
+		return nil
+	}
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		w.runWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-stopCtx.Done():
+		return stopCtx.Err()
+	}
+}
+
 // runSyslog 在独立 goroutine 中运行 WatchSyslog, 将事件转成 syslogHint 放入 channel。
 func (w *Watcher) runSyslog(ctx context.Context, onError ErrorHandler) {
+	// 捕获当前 Run 的 channel 引用, 避免重启期间竞争。
+	hints := w.syslogHints
 	err := WatchSyslog(ctx, func(e SyslogEvent) {
 		mac := normalizeMAC(e.MAC)
 		if mac == "" {
@@ -549,7 +644,7 @@ func (w *Watcher) runSyslog(ctx context.Context, onError ErrorHandler) {
 			return
 		}
 		select {
-		case w.syslogHints <- h:
+		case hints <- h:
 		default:
 			atomic.AddUint64(&w.droppedHints, 1)
 		}
@@ -563,18 +658,22 @@ func (w *Watcher) runSyslog(ctx context.Context, onError ErrorHandler) {
 // 每个 hint 在独立 goroutine 中处理, 避免 handleDisconnectHint 的 500ms Sleep
 // 阻塞后续事件; worker 数通过 MaxConcurrentHints 限制防止 goroutine 爆炸。
 func (w *Watcher) runSyslogConsumer(ctx context.Context, onEvent EventHandler, onError ErrorHandler) {
+	// syslogHints 在 Run 入口重建, 这里按值捕获以避免重启时读到旧引用。
+	hints := w.syslogHints
 	sem := make(chan struct{}, 16) // 最多 16 个并发 handle goroutine
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case h := <-w.syslogHints:
+		case h := <-hints:
 			select {
 			case sem <- struct{}{}:
 			case <-ctx.Done():
 				return
 			}
+			w.runWG.Add(1)
 			go func(h syslogHint) {
+				defer w.runWG.Done()
 				defer func() { <-sem }()
 				if h.Disconnect {
 					w.handleDisconnectHint(ctx, h.MAC, onEvent, onError)

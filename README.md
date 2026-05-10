@@ -203,7 +203,7 @@ BA:79:97:73:89:8D    192.168.1.213    BA799773898D      -        Phone   -44(极
 
 | Type · 类型 | Purpose · 用途 |
 |------|---------|
-| `argus.Watcher` | **EN** Main entry · **中文** 主入口;`New(opts...) *Watcher` |
+| `argus.Watcher` | **EN** Main entry · **中文** 主入口;`New(opts...) *Watcher`, `Run`, `Stop`, `List`, `Known` |
 | `argus.Event` / `EventKind` | **EN** Business events (Online/Offline/Change) · **中文** 业务事件 |
 | `argus.Decision` / `DecisionKind` | **EN** Internal decision trace (17 branches) · **中文** 内部判定链路(17 种分支) |
 | `argus.Config` | **EN** Tunable thresholds · **中文** 阈值配置 |
@@ -212,7 +212,7 @@ BA:79:97:73:89:8D    192.168.1.213    BA799773898D      -        Phone   -44(极
 | `argus.SyslogEvent` | **EN** Raw syslog parse result · **中文** 原始系统日志解析结果 |
 | `argus.DetectLocalLocation()` | **EN** Parse `/etc/TZ` → `*time.Location` (no global mutation) · **中文** 解析 `/etc/TZ`,不修改全局状态 |
 | `argus.SetupLocalTimezone()` | **EN** *Deprecated.* Mutates `time.Local` · **中文** *已废弃*,修改全局 `time.Local` |
-| `argus.ErrHandlerRequired` / `ErrInvalidConfig` / `ErrNoFetcher` / `ErrFetchFailed` | **EN** Sentinel errors (`errors.Is`-compatible) · **中文** Sentinel 错误,可用 `errors.Is` 判别 |
+| `argus.ErrHandlerRequired` / `ErrInvalidConfig` / `ErrNoFetcher` / `ErrFetchFailed` / `ErrAlreadyRunning` | **EN** Sentinel errors (`errors.Is`-compatible) · **中文** Sentinel 错误,可用 `errors.Is` 判别 |
 
 Functional options · 函数式选项:
 

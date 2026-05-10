@@ -19,7 +19,7 @@ Types and functions used by **library consumers** — these must be preserved ac
 - `Config` — *new fields may be added with zero-value-preserves-default semantics*
 - `Watcher` — method signatures
 - `Option`, `EventHandler`, `ErrorHandler`, `DecisionHandler`
-- Sentinel errors: `ErrHandlerRequired`, `ErrInvalidConfig`, `ErrNoFetcher`, `ErrFetchFailed`
+- Sentinel errors: `ErrHandlerRequired`, `ErrInvalidConfig`, `ErrNoFetcher`, `ErrFetchFailed`, `ErrAlreadyRunning`
 
 ### Constructors / constructor-like
 
@@ -31,6 +31,7 @@ Types and functions used by **library consumers** — these must be preserved ac
 ### Watcher methods
 
 - `(*Watcher).Run(ctx, onEvent, onError) error`
+- `(*Watcher).Stop(stopCtx) error`
 - `(*Watcher).List(ctx) ([]Device, error)`
 - `(*Watcher).EnsureFetcher(ctx) error`
 - `(*Watcher).FetcherKind() FetcherKind`
@@ -49,6 +50,7 @@ Types and functions used by **library consumers** — these must be preserved ac
 - `EventHandler` / `ErrorHandler` / `DecisionHandler` are called synchronously but with **panic isolation**: a panic in user code is caught, reported via `onError` (for `EventHandler`) or swallowed (for `ErrorHandler`/`DecisionHandler`), and never kills any goroutine.
 - When `DecisionHandler` is not registered, `emitDecision` is **zero-cost**: no allocations, no `time.Now()` call. Backed by `BenchmarkEmitDecisionNil` (≤ 2 ns/op, 0 allocs).
 - `Run` validates `Config` at entry (`ErrInvalidConfig`) and surfaces baseline-fetch failures via `ErrFetchFailed`.
+- `Run` can be called multiple times on the same `Watcher` (subject to `ErrAlreadyRunning` when one is already active). After `Stop` returns, a new `Run` reuses preserved state (`known` / `offlineCooldown` / `lastEventAt` / detected `Fetcher`) but resets transient state (`misses` / `disconnectInFlight` / `syslogHints` / `droppedHints`).
 
 ---
 

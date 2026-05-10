@@ -17,6 +17,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.0] - 2026-05-09
+
+Lifecycle: add graceful stop and restart on the same `*Watcher`. Closes the
+last Level-5 API gap — long-running services can now hot-reload config on
+SIGHUP without re-emitting Online for every known device.
+
+### Added · 新增
+
+- **`(*Watcher).Stop(ctx) error`** — graceful shutdown that cancels the
+  internal Run ctx and waits for all spawned goroutines (syslog listener,
+  hint consumer, hint workers) to exit via an internal `sync.WaitGroup`.
+  - Idempotent: no-op when no Run is active.
+  - Returns `context.DeadlineExceeded` on stop-ctx timeout; workers continue
+    to exit in the background.
+  - After Stop returns `nil`, `Run` can be called again on the same Watcher.
+  (`watcher.go`)
+
+- **`ErrAlreadyRunning` sentinel** — concurrent `Run` calls on the same
+  Watcher fail-fast with this error (matchable via `errors.Is`), instead
+  of silently corrupting shared state.
+  (`errors.go`)
+
+- **Restart semantics** — on second `Run`:
+  - **Preserved**: `known`, `offlineCooldown`, `lastEventAt`, detected
+    `Fetcher` / `detectKind` (`sync.Once` caches)
+  - **Reset**: `misses`, `disconnectInFlight`, `syslogHints` channel
+    (recreated), `droppedHints` counter
+  Rationale: timeless state should survive config reload; transient state
+  from the previous run would poison new decisions.
+  (`watcher.go:Run`)
+
+- **`ExampleWatcher_Stop`** — SIGHUP hot-reload pattern runnable on
+  pkg.go.dev. (`example_test.go`)
+
+- **9 regression tests** in `lifecycle_test.go`:
+  - `TestRunConcurrentReturnsAlreadyRunning`
+  - `TestStopIdempotent` / `TestStopBeforeRun`
+  - `TestRunAfterStopSucceeds`
+  - `TestRestartPreservesKnownAndCooldown`
+  - `TestRestartResetsTransients`
+  - `TestStopWaitsForDisconnectWorker` — uses a slow prober to force a
+    real worker wait, verifies Stop blocks ≥ 300ms
+  - `TestStopWithTimeout` — verifies `context.DeadlineExceeded` surface
+  - `TestGoroutineLeakOnRestart` — 30-cycle Run/Stop loop, asserts
+    goroutine count stable within ±5
+
+### Changed · 变更
+
+- `Run` docstring no longer claims "不支持多次 Run"; now documents the
+  CAS guard, restart semantics, and state-preservation contract.
+- New `Watcher` fields (unexported): `running atomic.Bool`, `runWG sync.WaitGroup`,
+  `runCancel context.CancelFunc`.
+- Hint worker goroutines in `runSyslogConsumer` now register with `runWG`
+  so `Stop` waits for them to complete.
+- `runSyslog` and `runSyslogConsumer` now capture the current Run's
+  `syslogHints` channel by value at entry, ensuring no race with the
+  channel's recreation on restart.
+
+### STABILITY
+
+`STABILITY.md` v1.0 checklist item for multi-Run support removed (now
+implemented). `Stop` and `ErrAlreadyRunning` added to the Stable public
+surface.
+
+---
+
 ## [0.4.0] - 2026-05-09
 
 Focus on **production-grade robustness**: user callbacks can no longer kill
@@ -283,7 +349,8 @@ Initial public release · 首次公开发布。
 Link references (kept at the bottom for readability).
 -->
 
-[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/xxl6097/argusd/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/xxl6097/argusd/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/xxl6097/argusd/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/xxl6097/argusd/compare/v0.1.0...v0.2.0

@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	argus "github.com/xxl6097/argus"
 )
@@ -122,5 +124,55 @@ func ExampleErrNoFetcher() {
 		fmt.Println("Config.Validate rejected the config")
 	case errors.Is(err, argus.ErrFetchFailed):
 		fmt.Println("initial baseline fetch failed")
+	case errors.Is(err, argus.ErrAlreadyRunning):
+		fmt.Println("another Run is already active")
 	}
+}
+
+// ExampleWatcher_Stop shows the SIGHUP hot-reload pattern: the Watcher
+// survives config changes without re-emitting Online for every known device.
+//
+// State preservation across Stop → Run:
+//   - preserved: known, offlineCooldown, lastEventAt, detected Fetcher
+//   - reset:     misses, disconnectInFlight, syslogHints channel, droppedHints
+func ExampleWatcher_Stop() {
+	w := argus.New()
+
+	sighup := make(chan os.Signal, 1)
+	signal.Notify(sighup, syscall.SIGHUP)
+	sigterm := make(chan os.Signal, 1)
+	signal.Notify(sigterm, syscall.SIGTERM, syscall.SIGINT)
+
+	for {
+		ctx, cancel := context.WithCancel(context.Background())
+		runErr := make(chan error, 1)
+		go func() { runErr <- w.Run(ctx, onEvent, onError) }()
+
+		select {
+		case <-sighup:
+			// Hot-reload config
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := w.Stop(stopCtx); err != nil {
+				log.Printf("stop timed out: %v", err)
+			}
+			stopCancel()
+			cancel()
+			<-runErr
+			log.Println("reloaded config; restarting watcher")
+			// loop continues, fresh Run with new config
+
+		case <-sigterm:
+			cancel()
+			<-runErr
+			return
+		}
+	}
+}
+
+// Example callback helpers for ExampleWatcher_Stop.
+func onEvent(e argus.Event) {
+	log.Printf("[event] %s %s", e.Kind, e.Device.MAC)
+}
+func onError(err error) {
+	log.Printf("[error] %v", err)
 }

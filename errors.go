@@ -25,4 +25,8 @@ var (
 	ErrNoFetcher = errors.New("argus: no fetcher available")
 	// ErrFetchFailed 包裹 Fetcher.Fetch 的失败, 便于上层通过 errors.Is 过滤拉取类错误。
 	ErrFetchFailed = errors.New("argus: fetch failed")
+	// ErrAlreadyRunning 表示 Watcher 已有一个 Run 正在执行。同一 Watcher 在任何时刻
+	// 只能有一个 Run 活跃; 并发调用 Run 的后来者会立刻返回此错误, 避免共享状态被破坏。
+	// 允许的模式是先 Stop 再 Run (重启语义), 参见 (*Watcher).Stop。
+	ErrAlreadyRunning = errors.New("argus: watcher already running")
 )
