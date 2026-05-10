@@ -545,6 +545,43 @@ func TestHandleConnectHintBasicEvent(t *testing.T) {
 	}
 }
 
+// TestHandleConnectHintPreservesWirelessShape 是针对 v0.13.2 修复的回归:
+// 之前 WiFi 设备离线后快速重连时, handleConnectHint 构造的 Online 事件里
+// Radio/SSID 都是空字符串 -> Device.Wired() 返回 true -> Web UI 上一闪 "有线上线",
+// 随后 1s 后 diff 轮询发现 Radio="5G" 又触发 EventChange, 让用户看到
+// "离线 -> 有线上线 -> 变更无线" 三连串噪音。修复: 保留 lastShape 快照,
+// 重连时沿用上次的无线字段, 使首次 Online 就是正确的 WiFi 形态。
+func TestHandleConnectHintPreservesWirelessShape(t *testing.T) {
+	w := New(WithFetcher(staticFetcher{}), WithProber(nil))
+	// Simulate that the device was previously known as a 5G client by
+	// seeding lastShape directly (this is what the diff loop would
+	// populate after a poll tick).
+	w.stateMu.Lock()
+	w.rememberShape(Device{
+		MAC:     "aa:bb:cc:dd:ee:ff",
+		Radio:   "5G",
+		SSID:    "home-5G",
+		Vendor:  "apple",
+		Channel: 36,
+	})
+	w.stateMu.Unlock()
+
+	col := &eventCollector{}
+	h := syslogHint{MAC: "aa:bb:cc:dd:ee:ff", IP: "1.1.1.1"}
+	w.handleConnectHint(context.Background(), h, col.emit, nil)
+
+	if len(col.events) != 1 || col.events[0].Kind != EventOnline {
+		t.Fatalf("expected EventOnline, got %+v", col.events)
+	}
+	d := col.events[0].Device
+	if d.Wired() {
+		t.Errorf("device reported wired; expected WiFi shape to be preserved: %+v", d)
+	}
+	if d.Radio != "5G" || d.SSID != "home-5G" {
+		t.Errorf("wireless shape not preserved: Radio=%q SSID=%q", d.Radio, d.SSID)
+	}
+}
+
 func TestHandleConnectHintFallbackToIP(t *testing.T) {
 	// fetcher 返回空, 但 hint 有 IP → 降级为基础记录
 	w := New(WithFetcher(staticFetcher{}), WithProber(nil))

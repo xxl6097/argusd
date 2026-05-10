@@ -17,6 +17,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.13.2] - 2026-05-10
+
+Patch release. Fixes the "device keeps flashing online/offline on the
+web UI" user report. Two root causes in one cycle:
+
+### Fixed · 修复
+
+- **Library — WiFi reconnects no longer mislabel as wired** — when a
+  phone disconnected and reassociated to the same SSID, the
+  post-reconnect `Online` event was built from syslog+DHCP only (no
+  `ubus` call during the handshake), leaving `Radio` and `SSID` empty.
+  `Device.Wired()` returns `true` when `Radio == ""`, so the dashboard
+  rendered a transient "有线 wired" badge for a WiFi device, followed
+  ~1 s later by an `EventChange` filling in `Radio: "" → "5G"`. The
+  net UX was a three-event burst — `OFFLINE → ONLINE (as wired) →
+  CHANGE (to WiFi)` — for every single phone reconnect.
+
+  Fix: `Watcher` now retains a `lastShape` map (MAC → last-observed
+  `Radio` / `SSID` / `Vendor` / `Type` / `Channel`) that survives
+  removal from `known`. `handleConnectHint` seeds the emitted
+  `Device` from this cache when available, so the initial `Online`
+  already carries the correct wireless fields. The diff poll loop
+  refreshes the cache each tick. `WithBaseline` entries are also
+  seeded on Run start. No API surface change.
+
+  Added regression test `TestHandleConnectHintPreservesWirelessShape`.
+  (`watcher.go`, `watcher_test.go`)
+
+- **Dashboard — reconnect bursts coalesce into one row** — the
+  events list now detects same-MAC events within a 10 s window and
+  upgrades the existing row in place instead of inserting three
+  separate entries:
+
+  | Prev pill | Incoming | Result |
+  |---|---|---|
+  | OFFLINE | ONLINE | **RECONNECT** · "重连 RECONNECTED" |
+  | ONLINE | OFFLINE | **FLAP** · "抖动 FLAP" |
+  | any | CHANGE | keep previous pill, refresh detail |
+
+  A WiFi reassociation now produces a single row that says
+  "RECONNECT" with current device info, instead of three rows that
+  look like real flapping. Devices outside the 10 s window still get
+  a fresh row, so genuine disconnects + late reconnects are visible.
+  (`argusweb/assets/dashboard.html`)
+
+Desktop layout and library API are unchanged.
+
+---
+
 ## [0.13.1] - 2026-05-10
 
 Patch release. Responsive rework of the embedded dashboard so the
@@ -914,7 +963,8 @@ Initial public release · 首次公开发布。
 Link references (kept at the bottom for readability).
 -->
 
-[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.13.1...HEAD
+[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.13.2...HEAD
+[0.13.2]: https://github.com/xxl6097/argusd/compare/v0.13.1...v0.13.2
 [0.13.1]: https://github.com/xxl6097/argusd/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/xxl6097/argusd/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/xxl6097/argusd/compare/v0.11.0...v0.12.0

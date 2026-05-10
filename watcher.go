@@ -294,6 +294,13 @@ type Watcher struct {
 	// 流程, 后两个直接静默跳过 (DecisionDisconnectSkippedInflight)。
 	disconnectInFlight map[string]struct{}
 
+	// lastShape 记录每台设备最近一次被观测到的无线形态 (Radio/SSID/Vendor/Type/Channel),
+	// 即使设备从 known 中移除后仍保留, 供 handleConnectHint 在 WiFi 重连时恢复字段 —
+	// 否则首次发射 Online 只带 MAC+IP, Radio 为空触发 Wired()=true, 下一轮 diff 再
+	// 发一次 Change 改为 WiFi, 用户看到 "离线 -> 有线上线 -> 变更无线" 三连鸣。
+	// 由 diff / handleConnectHint 持 stateMu 时写入。
+	lastShape map[string]Device
+
 	// droppedHints 记录因 syslogHints channel 已满而丢弃的事件数,
 	// 周期性通过 onError 报告。
 	droppedHints uint64
@@ -423,6 +430,7 @@ func New(opts ...Option) *Watcher {
 		offlineCooldown:    make(map[string]time.Time),
 		lastEventAt:        make(map[string]lastEvent),
 		disconnectInFlight: make(map[string]struct{}),
+		lastShape:          make(map[string]Device),
 	}
 	for _, opt := range opts {
 		opt(w)
@@ -584,6 +592,7 @@ func (w *Watcher) Run(ctx context.Context, onEvent EventHandler, onError ErrorHa
 	// 将基线填入 watcher state (WithBaseline 的内容保持, 新拉取覆盖同 MAC)
 	for mac, d := range baseline {
 		w.known[mac] = d
+		w.rememberShape(d)
 	}
 	w.runCancel = cancel
 	w.stateMu.Unlock()
@@ -641,6 +650,21 @@ func (w *Watcher) Run(ctx context.Context, onEvent EventHandler, onError ErrorHa
 			}
 			w.stateMu.Lock()
 			pending := diff(w.known, cur, w.misses, apRaw, apRaw, w.cfg, runCtx, w.prober, w.offlineCooldown, w.lastEventAt, w.onDecision)
+			// Refresh lastShape for every currently-known device so that
+			// a subsequent disconnect + quick reconnect can emit Online
+			// with the correct Radio/SSID (instead of falling back to
+			// wired=true during the WiFi handshake window when we don't
+			// call Fetcher).
+			for mac, d := range w.known {
+				w.rememberShape(Device{
+					MAC:     mac,
+					Radio:   d.Radio,
+					SSID:    d.SSID,
+					Vendor:  d.Vendor,
+					Type:    d.Type,
+					Channel: d.Channel,
+				})
+			}
 			w.stateMu.Unlock()
 			// 在锁外发射事件: 用户回调 panic / 阻塞都不会影响 Watcher 共享状态。
 			for _, ev := range pending {
@@ -861,6 +885,13 @@ func (w *Watcher) handleConnectHint(ctx context.Context, h syslogHint, onEvent E
 		w.emitDecision(DecisionConnectSkippedKnown, h.MAC, "")
 		return // 防重复
 	}
+	// Seed with the device's last-observed wireless shape (Radio/SSID/Vendor/
+	// Type/Channel) if we've seen it before. Prevents the "reconnect as
+	// wired -> immediate Change to WiFi" double event — e.g. a phone
+	// reassociating to the same SSID kept printing an Online marked
+	// wired=true because this function can't call the fetcher during
+	// handshake.
+	seed := w.lastShape[h.MAC]
 	w.stateMu.Unlock()
 
 	// 立即用 DHCP/ARP hints 构建基础记录触发上线。后续 diff 会补齐 RSSI/Radio/SSID。
@@ -869,6 +900,14 @@ func (w *Watcher) handleConnectHint(ctx context.Context, h syslogHint, onEvent E
 		MAC:      h.MAC,
 		IP:       h.IP,
 		LastSeen: time.Now(),
+		// Preserve prior wireless shape if known. RSSI is deliberately
+		// left at zero so the cooldown logic treats this as "no signal
+		// info yet" rather than a stale reading.
+		Radio:   seed.Radio,
+		SSID:    seed.SSID,
+		Vendor:  seed.Vendor,
+		Type:    seed.Type,
+		Channel: seed.Channel,
 	}, hints[h.MAC])
 	w.emitConnectEvent(d, onEvent, onError)
 }
@@ -901,16 +940,40 @@ func (w *Watcher) emitConnectEvent(d Device, onEvent EventHandler, onError Error
 	// 抖动抑制: 窗口期内同类事件静默更新
 	if w.shouldSuppressFlap(d.MAC, EventOnline, now) {
 		w.known[d.MAC] = d
+		w.rememberShape(d)
 		w.stateMu.Unlock()
 		w.emitDecision(DecisionFlapSuppressOnline, d.MAC, "")
 		return
 	}
 	w.known[d.MAC] = d
+	w.rememberShape(d)
 	w.recordEvent(d.MAC, EventOnline, now)
 	w.stateMu.Unlock()
 
 	w.emitDecision(DecisionConnectEmitted, d.MAC, fmt.Sprintf("IP=%s", d.IP))
 	w.safeInvokeEvent(onEvent, onError, Event{Time: now, Kind: EventOnline, Device: d})
+}
+
+// rememberShape caches the wireless shape (Radio/SSID/Vendor/Type/Channel)
+// of a freshly observed device so handleConnectHint can re-emit an Online
+// with the correct link metadata instead of an empty (wired-looking) one.
+// Must be called with stateMu held. Non-wired devices only — wired devices
+// don't need recovery since their empty Radio is semantically correct.
+func (w *Watcher) rememberShape(d Device) {
+	if w.lastShape == nil { // defensive: tests that build Watcher manually
+		return
+	}
+	if d.Radio == "" && d.SSID == "" {
+		// Wired device or insufficient info; don't overwrite a useful cache.
+		return
+	}
+	w.lastShape[d.MAC] = Device{
+		Radio:   d.Radio,
+		SSID:    d.SSID,
+		Vendor:  d.Vendor,
+		Type:    d.Type,
+		Channel: d.Channel,
+	}
 }
 
 // drainHintsFor 清空 syslogHints 中属于指定 MAC 的后续事件, 其它 MAC 的放回。

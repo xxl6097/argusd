@@ -253,15 +253,57 @@
       elEvents.innerHTML = "";
       eventsStarted = true;
     }
-    const li = document.createElement("li");
+
     const ts = new Date(data.time).toLocaleTimeString();
     const mac = (data.device && data.device.mac) ? data.device.mac.toUpperCase() : "";
+
+    // Coalesce noisy reconnect bursts: a WiFi reassociation typically
+    // produces OFFLINE -> ONLINE -> CHANGE within ~2 seconds. Instead of
+    // 3 rows, update the most recent entry for the same MAC in place
+    // if it was added within the last 10 seconds.
+    const now = Date.now();
+    const top = elEvents.firstElementChild;
+    if (top && top.dataset && top.dataset.mac === mac &&
+        (now - Number(top.dataset.ts || 0)) < 10000) {
+      // Upgrade the pill: ONLINE followed by OFFLINE becomes a flap; OFFLINE
+      // followed by ONLINE becomes "reconnected"; either + CHANGE keeps the
+      // original kind but appends detail.
+      const prevKind = top.dataset.kind;
+      let newKind = prevKind;
+      if (prevKind === "OFFLINE" && kind === "ONLINE")       newKind = "RECONNECT";
+      else if (prevKind === "ONLINE" && kind === "OFFLINE")  newKind = "FLAP";
+      else if (kind === "CHANGE")                            newKind = prevKind; // keep original pill, just refresh detail
+      else                                                   newKind = kind;
+      renderEventRow(top, newKind, data, ts, mac);
+      top.dataset.kind = newKind;
+      top.dataset.ts   = String(now);
+      return;
+    }
+
+    const li = document.createElement("li");
+    li.dataset.mac  = mac;
+    li.dataset.kind = kind;
+    li.dataset.ts   = String(now);
+    renderEventRow(li, kind, data, ts, mac);
+    elEvents.insertBefore(li, elEvents.firstChild);
+    while (elEvents.children.length > MAX_EVENT_LINES) {
+      elEvents.removeChild(elEvents.lastChild);
+    }
+  }
+
+  function renderEventRow(li, kind, data, ts, mac) {
     const pillClass =
-      kind === "ONLINE"  ? "online"  :
-      kind === "OFFLINE" ? "offline" : "change";
+      kind === "ONLINE"    ? "online"  :
+      kind === "OFFLINE"   ? "offline" :
+      kind === "RECONNECT" ? "online"  :
+      kind === "FLAP"      ? "offline" :
+                              "change";
     const label =
-      kind === "ONLINE"  ? "上线 ONLINE"  :
-      kind === "OFFLINE" ? "离线 OFFLINE" : "变更 CHANGE";
+      kind === "ONLINE"    ? "上线 ONLINE"        :
+      kind === "OFFLINE"   ? "离线 OFFLINE"       :
+      kind === "RECONNECT" ? "重连 RECONNECTED"   :
+      kind === "FLAP"      ? "抖动 FLAP"          :
+                              "变更 CHANGE";
     let detail = "";
     if (kind === "CHANGE" && data.changes) {
       detail = data.changes.map(c => c.field + ": " + c.old + "→" + c.new).join(", ");
@@ -274,10 +316,6 @@
       '<span class="elpill pill ' + pillClass + '">' + esc(label) + '</span>' +
       '<span class="mac">' + esc(mac) + '</span>' +
       '<span class="detail">' + esc(detail) + '</span>';
-    elEvents.insertBefore(li, elEvents.firstChild);
-    while (elEvents.children.length > MAX_EVENT_LINES) {
-      elEvents.removeChild(elEvents.lastChild);
-    }
   }
 
   function connectSSE() {
