@@ -1,0 +1,41 @@
+name: Feature request
+description: Propose a new feature or API addition
+title: "[feat] "
+labels: [enhancement, needs-triage]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / use case
+      description: What are you trying to accomplish? What forced you to work around the current API?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API
+      description: Sketch the Go signature if possible. `WithXxx(...) Option` or a new struct/method.
+      render: go
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches and why they don't fit (e.g. implementing outside the library, using DecisionHandler).
+
+  - type: dropdown
+    id: breaking
+    attributes:
+      label: Is this a breaking change?
+      options:
+        - "No — purely additive"
+        - "Yes — would require a v2 module path"
+        - "I'm not sure"
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context

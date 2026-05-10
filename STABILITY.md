@@ -75,6 +75,26 @@ New fields on `Event` / `Device` / `Decision` / `Config` may be added in future 
 - `Run` validates `Config` at entry (`ErrInvalidConfig`) and surfaces baseline-fetch failures via `ErrFetchFailed`.
 - `Run` can be called multiple times on the same `Watcher` (subject to `ErrAlreadyRunning` when one is already active). After `Stop` returns, a new `Run` reuses preserved state (`known` / `offlineCooldown` / `lastEventAt` / detected `Fetcher`) but resets transient state (`misses` / `disconnectInFlight` / `syslogHints` / `droppedHints`).
 
+### Context cancellation contract (stable from v0.8.0)
+
+Every entry point that takes a `context.Context` follows these rules — this table is a formal part of the Stable surface:
+
+| Entry point | `ctx.Done()` fires mid-call | `ctx` already cancelled at call time | On return |
+|---|---|---|---|
+| `(*Watcher).List(ctx)` | returns the wrapped ctx error from the underlying `Fetcher.Fetch` (in-tree fetchers propagate via `fmt.Errorf("...: %w", err)`); no background goroutine spawned | same — `exec.CommandContext` / `ubus` call aborts immediately | caller observes error, no Watcher state changed |
+| `(*Watcher).EnsureFetcher(ctx)` | returns `ErrNoFetcher` wrapping `ctx.Err()` **if detection was in progress**; a subsequent call *does* retry (the `sync.Once` only records success) | same as mid-call | on success, detected `Fetcher` / `detectKind` cached for the Watcher's lifetime |
+| `(*Watcher).Run(ctx, onEvent, onError)` | returns **`nil`** (not `ctx.Err()`) after in-flight decisions flush and all spawned goroutines exit via `runWG.Wait()`; matches `http.Server.Shutdown` convention | returns `nil` immediately after baseline fetch completes or is aborted | `running` flag cleared; `runCancel` nulled; restart is safe |
+| `(*Watcher).Stop(stopCtx)` | — (Stop cancels the Run's internal ctx; it only observes `stopCtx` for the wait deadline) | returns `stopCtx.Err()` immediately; Run goroutines still exit in the background | `running` stays `false`; a follow-up `Stop` returns `nil` (idempotent) |
+| `HintSource.Hints(ctx)` | `DefaultHintSource`: aborts partial read, returns whatever was assembled up to that point (can be empty) | `DefaultHintSource`: returns empty map without reading | no side effects beyond the 5 s cache refresh |
+| `Fetcher.Fetch(ctx)` | all in-tree impls (`AhsapdFetcher`, `HostapdFetcher`) propagate `ctx.Err()` via `fmt.Errorf("...: %w", err)` | same | `exec.CommandContext` kills subprocess with SIGKILL |
+
+**Key invariants** (tested in `context_contract_test.go`):
+
+- **Run exit on `ctx.Done()` is not an error.** `Run` returns `nil`, not `ctx.Err()` — this lets consumers match `err != nil` as "terminal failure" without also matching graceful shutdown. Only `ErrHandlerRequired` / `ErrInvalidConfig` / `ErrNoFetcher` / `ErrFetchFailed` / `ErrAlreadyRunning` from the **validation / baseline** phase are returned as non-nil.
+- **Stop always waits for in-flight decisions to flush** before returning `nil`. If `stopCtx` expires first, Stop returns `stopCtx.Err()` but the workers still exit in the background (the `runWG.Wait` goroutine runs to completion inside a fresh goroutine) — they never leak.
+- **Run + Stop concurrency is safe.** Calling `Stop` on one goroutine while another is blocked in `Run` cancels Run's internal ctx; Run returns `nil`; Stop's `runWG.Wait` completes.
+- **Nil ctx is a programming error, not a supported input.** Entry points do NOT silently fall back to `context.Background()`; `exec.CommandContext(nil, ...)` / `time.NewTicker` inside `Run` will panic. This matches the stdlib convention.
+
 ---
 
 ## Evolving surface (演进中 · 可能微调)
@@ -104,19 +124,36 @@ Functions marked `// Deprecated:` will emit an IDE warning and pkg.go.dev banner
 
 ---
 
-## Path to v1.0 (进阶为 v1.0 的条件)
+## Path to v1.0 — criteria met (soak pending)
 
-Argus will ship `v1.0.0` once **all** of the following hold for **3 consecutive months** on the `main` branch:
+As of v0.8.0, all criteria for cutting v1.0 are satisfied. The tag is
+held until the maintainer decides the soak window has been long
+enough — v1.0 locks the Stable public surface under SemVer v1 rules,
+so breaking changes afterward require a `v2` module path.
 
-1. ✅ No breaking change to any item in the "Stable public surface" list
-2. ✅ `go test -race ./...` passing on every commit
+1. ✅ No breaking change to any item in the "Stable public surface" list across 0.3 → 0.8 (six releases)
+2. ✅ `go test -race ./...` passing on every tagged release; multi-version matrix (Go 1.21 – 1.25) since v0.8.0
 3. ✅ `go vet ./...` clean
 4. ✅ No unresolved `Deprecated` entries with removal intent
-5. ✅ Runtime `panic` caught in tests (library never propagates panic to user goroutines)
-6. ✅ `pkg.go.dev` godoc page renders all types and at least one runnable `Example` per high-traffic entry point
+5. ✅ Runtime `panic` caught in tests (library never propagates panic to user goroutines) — see `panic_test.go`
+6. ✅ `pkg.go.dev` godoc page renders all types; 10+ runnable `Example` functions cover the high-traffic entry points
 7. ✅ All exported symbols have godoc comments
+8. ✅ Lifecycle: `Stop` + restart supported (v0.5.0)
+9. ✅ Portability: `HintSource` abstraction (v0.7.0)
+10. ✅ Observability: zero-dependency `argusmetrics` subpackage (v0.7.0)
+11. ✅ JSON serialization contract (v0.6.0)
+12. ✅ Consumer test fixtures: `argustest` subpackage (v0.6.0)
+13. ✅ Context cancellation contract documented + tested (v0.8.0)
+14. ✅ Multi-Go-version CI matrix (Go 1.21 – 1.25, N-2 policy) (v0.8.0)
+15. ✅ Security policy + maintenance signals ([`SECURITY.md`](./SECURITY.md), [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md), issue/PR templates) (v0.8.0)
 
-After v1.0, any breaking change requires a `v2` module path. Before v1.0, breaking changes are permitted but each `0.x.0` release must ship a migration note.
+**Post-v1.0 policy**: any breaking change to Stable surface requires a
+`v2` module path (`github.com/xxl6097/argus/v2`). Additions (new
+symbols, new `Config` fields with zero-value-preserves-default, new
+`DecisionKind` / `EventKind` constants) continue to ship as minor
+bumps and are non-breaking.
+
+See [`MIGRATION.md`](./MIGRATION.md) for per-release upgrade notes.
 
 ---
 

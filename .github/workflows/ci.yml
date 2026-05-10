@@ -8,21 +8,29 @@ on:
 
 jobs:
   test:
-    name: Test
+    name: Test (Go ${{ matrix.go }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Argus supports the current Go release and the two preceding minor
+        # versions (N-2 policy). Primary CI signal = latest stable; the older
+        # entries guard against accidental use of post-1.21 stdlib features.
+        go: ["1.21", "1.22", "1.23", "1.24", "1.25"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: ${{ matrix.go }}
           check-latest: true
       - name: go vet
         run: go vet ./...
       - name: go test -race
         run: go test -race -coverprofile=coverage.out ./...
-      - name: Coverage report
+      - name: Coverage report (Go ${{ matrix.go }})
         run: go tool cover -func=coverage.out | tail -1
       - name: Benchmarks (zero-cost DecisionHandler guard)
+        if: matrix.go == '1.25'
         run: go test -bench=BenchmarkEmitDecisionNil -benchmem -run=^$ -count=1 ./...
 
   cross-compile:

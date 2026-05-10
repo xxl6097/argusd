@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security advisory
+    url: https://github.com/xxl6097/argus/security/advisories/new
+    about: Report a security vulnerability privately. Do NOT open a public issue.
+  - name: API stability question
+    url: https://github.com/xxl6097/argus/discussions
+    about: Unsure if something is stable? Ask in Discussions before filing a bug.

@@ -17,6 +17,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.0] - 2026-05-10
+
+Focus on **adoption readiness**: explicit Go version support policy,
+formalized context cancellation contract, and the maintenance signals
+(security policy, code of conduct, issue/PR templates) that enterprise
+consumers check before taking a dependency. No code-level breaking
+changes; the library public surface is unchanged.
+
+### Added · 新增
+
+- **Go version support policy** — `go.mod` declares `go 1.21` (was
+  `go 1.25`). Argus supports the **current Go release and the two
+  preceding minor versions** (N-2). CI matrix now tests on Go 1.21,
+  1.22, 1.23, 1.24, and 1.25. Consumers on older toolchains
+  (OpenWrt SDKs, embedded builds) can now pin Argus without waiting
+  for their Go upgrade path. (`go.mod`, `.github/workflows/ci.yml`)
+
+- **Context cancellation contract** — `STABILITY.md` now contains a
+  formal table documenting exactly what `Run` / `Stop` / `List` /
+  `EnsureFetcher` / `HintSource.Hints` / `Fetcher.Fetch` do when
+  `ctx.Done()` fires mid-call or when ctx is pre-cancelled. Key
+  invariants:
+  - `Run` returns `nil` (not `ctx.Err()`) on graceful cancellation —
+    matches `http.Server.Shutdown` convention
+  - `Stop` always waits for in-flight decisions to flush; if
+    `stopCtx` expires, workers still exit in the background (never
+    leak)
+  - `Run` + `Stop` concurrency is safe; nil ctx is a programming
+    error, not silently masked
+  (`STABILITY.md`)
+
+- **`context_contract_test.go`** — 6 regression tests enforcing the
+  contract: `TestContractRunReturnsNilOnCtxCancel`,
+  `TestContractStopIdempotent`,
+  `TestContractStopReturnsDeadlineExceeded`,
+  `TestContractRunAlreadyRunning`,
+  `TestContractRunStopConcurrencySafe`,
+  `TestContractListReturnsFetcherError`.
+
+- **Security policy** — [`SECURITY.md`](./SECURITY.md) documents the
+  private vulnerability reporting channel (email /
+  GitHub security advisory), SLA (72 h ack, 7 d triage, 30 d fix
+  for high/critical), supported-version table, and threat model.
+  Argus is a local-network read-only observer, makes no outbound
+  requests, and ships zero third-party dependencies.
+
+- **Code of conduct** — [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md)
+  (Contributor Covenant v2.1).
+
+- **Issue / PR templates** — `.github/ISSUE_TEMPLATE/bug_report.yml`,
+  `feature_request.yml`, and `config.yml` (blank issues disabled,
+  security reports routed to private advisory). New
+  `.github/pull_request_template.md` walks contributors through the
+  stability-impact + test-plan checklist.
+
+- **Release cadence & LTS policy** — `CONTRIBUTING.md` now documents:
+  cadence (minor = theme-driven, not scheduled), supported Go
+  versions (N-2), post-v1.0 LTS (current minor + security-only for
+  previous minor for 6 months), and deprecation timeline (one full
+  minor cycle minimum before removal).
+
+### Fixed · 修复
+
+- **Race in `TestSetupLocalTimezone`** — the test mutated global
+  `time.Local` in a `defer`, racing with parallel tests that read
+  `time.Now()`. Renamed to `TestDetectLocalLocationSafe` and
+  rewritten to exercise only the non-mutating `DetectLocalLocation`
+  path. Race exposed by the new multi-Go-version CI matrix
+  (`go test -race -count=3`). (`timezone_test.go`)
+
+### Documentation
+
+- `STABILITY.md` adds the "Context cancellation contract" table to
+  the Stable surface.
+- `CONTRIBUTING.md` adds "Release cadence & LTS policy" and
+  "Security" sections.
+
+---
+
 ## [0.7.0] - 2026-05-10
 
 Focus on **portability + observability**: make the enrichment pipeline
@@ -491,7 +570,8 @@ Initial public release · 首次公开发布。
 Link references (kept at the bottom for readability).
 -->
 
-[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/xxl6097/argusd/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/xxl6097/argusd/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/xxl6097/argusd/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/xxl6097/argusd/compare/v0.4.0...v0.5.0

@@ -1,0 +1,73 @@
+name: Bug report
+description: Report an issue with Argus library or argusd CLI
+title: "[bug] "
+labels: [bug, needs-triage]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One-sentence description of the problem.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Argus version
+      description: Output of `argusd --version` or the go.mod require line.
+      placeholder: "v0.8.0"
+    validations:
+      required: true
+
+  - type: input
+    id: go-version
+    attributes:
+      label: Go version
+      description: Output of `go version` (only needed for library issues, not CLI releases).
+      placeholder: "go1.22.5 darwin/arm64"
+
+  - type: input
+    id: platform
+    attributes:
+      label: Platform / arch
+      placeholder: "OpenWrt 22.03 on MT7981 (arm64)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproducer
+      description: Minimal code snippet, commands, or logs that show the bug.
+      render: bash
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Relevant `DecisionHandler` trace lines, `go test -race` output, etc. Scrub MACs/IPs if needed.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have searched existing issues and did not find a duplicate.
+          required: true
+        - label: This is not a security issue (if it is, I will email privately per SECURITY.md).
+          required: true

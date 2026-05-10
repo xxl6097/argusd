@@ -52,14 +52,11 @@ func TestParsePosixTZInvalid(t *testing.T) {
 	}
 }
 
-func TestSetupLocalTimezone(t *testing.T) {
-	// SetupLocalTimezone 根据 /etc/TZ 或 TZ 环境变量。测试环境可能都不存在,
-	// 此时应返回 UTC 而非 panic。
-	origLocal := time.Local
-	defer func() { time.Local = origLocal }()
-
-	loc := SetupLocalTimezone()
-	if loc == nil {
-		t.Error("SetupLocalTimezone 不应返回 nil")
-	}
+func TestDetectLocalLocationSafe(t *testing.T) {
+	// DetectLocalLocation reads /etc/TZ or TZ env var, never mutates globals.
+	// On a dev machine with neither set, it legitimately returns nil —
+	// we only verify it doesn't panic. SetupLocalTimezone (Deprecated) is
+	// intentionally NOT tested here because it mutates time.Local, which
+	// would race with any parallel test that reads time.Now().
+	_ = DetectLocalLocation()
 }
