@@ -196,3 +196,39 @@ func ExampleConfig_jsonReload() {
 	w := argus.New(argus.WithConfig(cfg))
 	_ = w
 }
+
+// ExampleWithLogger shows how to bridge Argus's structured log events
+// to a third-party logger (here log/slog stand-in via fmt). The hot
+// decision path does not log; this hook only fires for lifecycle events
+// (watcher starting/stopping, fetcher detection) and recoverable
+// anomalies (syslog buffer overflow, fetch failures).
+func ExampleWithLogger() {
+	w := argus.New(
+		argus.WithLogger(func(_ context.Context, level argus.LogLevel, msg string, attrs ...argus.LogAttr) {
+			// Adapt to slog: slog.LogAttrs(ctx, slog.Level(level), msg, ...)
+			fmt.Printf("[%s] %s", level, msg)
+			for _, a := range attrs {
+				fmt.Printf(" %s=%v", a.Key, a.Value)
+			}
+			fmt.Println()
+		}),
+	)
+	_ = w
+}
+
+// ExampleConfigError shows how to extract field-level details from a
+// Config validation failure — useful when surfacing errors in a web UI
+// where each form field needs its own message.
+func ExampleConfigError() {
+	cfg := argus.DefaultConfig()
+	cfg.WeakMissThreshold = 0 // invalid
+
+	err := cfg.Validate()
+	if errors.Is(err, argus.ErrInvalidConfig) {
+		var ce *argus.ConfigError
+		if errors.As(err, &ce) {
+			fmt.Printf("field=%s reason=%s", ce.Field, ce.Reason)
+		}
+	}
+	// Output: field=WeakMissThreshold reason=must be > 0
+}

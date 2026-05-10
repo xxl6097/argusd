@@ -98,25 +98,35 @@ func formatDuration(d time.Duration) string {
 // Validate 校验配置合法性, 防止零值 / 负值导致死循环或 panic。
 func (c Config) Validate() error {
 	if c.PollInterval <= 0 {
-		return fmt.Errorf("PollInterval 必须大于 0, 当前: %s", c.PollInterval)
+		return &ConfigError{Field: "PollInterval", Value: c.PollInterval, Reason: "must be > 0"}
 	}
 	if c.OfflineMisses <= 0 {
-		return fmt.Errorf("OfflineMisses 必须大于 0, 当前: %d", c.OfflineMisses)
+		return &ConfigError{Field: "OfflineMisses", Value: c.OfflineMisses, Reason: "must be > 0"}
 	}
 	if c.OfflineCooldown < 0 {
-		return fmt.Errorf("OfflineCooldown 不能为负, 当前: %s", c.OfflineCooldown)
+		return &ConfigError{Field: "OfflineCooldown", Value: c.OfflineCooldown, Reason: "must be >= 0"}
 	}
 	if c.CooldownReleaseRSSI > 0 {
-		return fmt.Errorf("CooldownReleaseRSSI 必须 ≤ 0 (dBm), 当前: %d", c.CooldownReleaseRSSI)
+		return &ConfigError{Field: "CooldownReleaseRSSI", Value: c.CooldownReleaseRSSI, Reason: "must be <= 0 (dBm)"}
 	}
-	if c.WeakRSSI > 0 || c.ExtremelyWeakRSSI > 0 {
-		return fmt.Errorf("RSSI 阈值必须 ≤ 0 (dBm)")
+	if c.WeakRSSI > 0 {
+		return &ConfigError{Field: "WeakRSSI", Value: c.WeakRSSI, Reason: "must be <= 0 (dBm)"}
+	}
+	if c.ExtremelyWeakRSSI > 0 {
+		return &ConfigError{Field: "ExtremelyWeakRSSI", Value: c.ExtremelyWeakRSSI, Reason: "must be <= 0 (dBm)"}
 	}
 	if c.ExtremelyWeakRSSI >= c.WeakRSSI {
-		return fmt.Errorf("ExtremelyWeakRSSI (%d) 必须严格低于 WeakRSSI (%d)", c.ExtremelyWeakRSSI, c.WeakRSSI)
+		return &ConfigError{
+			Field:  "ExtremelyWeakRSSI",
+			Value:  c.ExtremelyWeakRSSI,
+			Reason: fmt.Sprintf("must be strictly less than WeakRSSI (%d)", c.WeakRSSI),
+		}
 	}
-	if c.WeakMissThreshold <= 0 || c.ExtremelyWeakMissThreshold <= 0 {
-		return fmt.Errorf("MissThreshold 必须大于 0")
+	if c.WeakMissThreshold <= 0 {
+		return &ConfigError{Field: "WeakMissThreshold", Value: c.WeakMissThreshold, Reason: "must be > 0"}
+	}
+	if c.ExtremelyWeakMissThreshold <= 0 {
+		return &ConfigError{Field: "ExtremelyWeakMissThreshold", Value: c.ExtremelyWeakMissThreshold, Reason: "must be > 0"}
 	}
 	return nil
 }
@@ -298,6 +308,10 @@ type Watcher struct {
 	// runCancel 是 Run 内部衍生 ctx 的 cancel, 由 Stop 触发; 无 Run 活跃时为 nil。
 	// 读写由 stateMu 保护。
 	runCancel context.CancelFunc
+
+	// logger 是可选的结构化日志钩子, 由 WithLogger 注入。nil 时所有 log 调用
+	// 通过 (*Watcher).log 快速返回 (单次 nil 检查)。
+	logger LoggerHandler
 }
 
 // loadHints 优先使用 Watcher 注入的 HintSource, 回退到包级默认。
@@ -445,10 +459,17 @@ func (w *Watcher) EnsureFetcher(ctx context.Context) error {
 		f, kind, err := DetectFetcher(ctx, w.cfg.FetchTimeout)
 		if err != nil {
 			w.detectErr = fmt.Errorf("%w: %v", ErrNoFetcher, err)
+			w.log(ctx, LogLevelError, "fetcher auto-detect failed",
+				LogAttr{Key: "timeout", Value: w.cfg.FetchTimeout},
+				LogAttr{Key: "error", Value: err.Error()},
+			)
 			return
 		}
 		w.fetcher = f
 		w.detectKind = kind
+		w.log(ctx, LogLevelInfo, "fetcher auto-detected",
+			LogAttr{Key: "kind", Value: string(kind)},
+		)
 		if w.onDetect != nil {
 			func() {
 				defer func() { _ = recover() }()
@@ -522,7 +543,10 @@ func (w *Watcher) Run(ctx context.Context, onEvent EventHandler, onError ErrorHa
 		return fmt.Errorf("%w: onEvent 不能为 nil", ErrHandlerRequired)
 	}
 	if err := w.cfg.Validate(); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+		// err is already a *ConfigError that unwraps to ErrInvalidConfig.
+		// Return it directly so errors.As(err, &ConfigError{}) works at
+		// Run's call site.
+		return err
 	}
 	if !w.running.CompareAndSwap(false, true) {
 		return ErrAlreadyRunning
@@ -536,6 +560,11 @@ func (w *Watcher) Run(ctx context.Context, onEvent EventHandler, onError ErrorHa
 	if err != nil {
 		return fmt.Errorf("%w: 初始基线拉取失败: %v", ErrFetchFailed, err)
 	}
+	w.log(ctx, LogLevelInfo, "watcher starting",
+		LogAttr{Key: "fetcher", Value: string(w.detectKind)},
+		LogAttr{Key: "baseline_devices", Value: len(baseline)},
+		LogAttr{Key: "poll_interval", Value: w.cfg.PollInterval.String()},
+	)
 
 	// 重启语义: 重置瞬态, 保留 timeless 状态; 衍生内部 ctx 供 Stop 触发。
 	runCtx, cancel := context.WithCancel(ctx)
@@ -588,11 +617,18 @@ func (w *Watcher) Run(ctx context.Context, onEvent EventHandler, onError ErrorHa
 		case <-reportTicker.C:
 			if dropped := atomic.SwapUint64(&w.droppedHints, 0); dropped > 0 {
 				w.safeInvokeError(onError, fmt.Errorf("最近 30s 内因缓冲区满丢弃 %d 条 syslog 事件", dropped))
+				w.log(runCtx, LogLevelWarn, "syslog buffer overflow",
+					LogAttr{Key: "dropped", Value: dropped},
+					LogAttr{Key: "window_sec", Value: 30},
+				)
 			}
 		case <-t.C:
 			apRaw, cur, err := w.fetchWithAPSet(runCtx)
 			if err != nil {
 				w.safeInvokeError(onError, err)
+				w.log(runCtx, LogLevelWarn, "fetch tick failed",
+					LogAttr{Key: "error", Value: err.Error()},
+				)
 				continue
 			}
 			w.stateMu.Lock()
@@ -639,6 +675,7 @@ func (w *Watcher) Stop(stopCtx context.Context) error {
 	}
 	cancel()
 
+	start := time.Now()
 	done := make(chan struct{})
 	go func() {
 		w.runWG.Wait()
@@ -646,8 +683,15 @@ func (w *Watcher) Stop(stopCtx context.Context) error {
 	}()
 	select {
 	case <-done:
+		w.log(stopCtx, LogLevelInfo, "watcher stopped",
+			LogAttr{Key: "elapsed_ms", Value: time.Since(start).Milliseconds()},
+		)
 		return nil
 	case <-stopCtx.Done():
+		w.log(stopCtx, LogLevelWarn, "watcher stop timed out; workers exit in background",
+			LogAttr{Key: "elapsed_ms", Value: time.Since(start).Milliseconds()},
+			LogAttr{Key: "error", Value: stopCtx.Err().Error()},
+		)
 		return stopCtx.Err()
 	}
 }

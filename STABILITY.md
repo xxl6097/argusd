@@ -19,9 +19,11 @@ Types and functions used by **library consumers** — these must be preserved ac
 - `Config` — *new fields may be added with zero-value-preserves-default semantics*
 - `Watcher` — method signatures
 - `Option`, `EventHandler`, `ErrorHandler`, `DecisionHandler`
+- `LoggerHandler`, `LogLevel`, `LogAttr` — structured logging hook (since v0.9.0)
 - `Hint` — single MAC's `{IP, Hostname}` enrichment payload
 - `HintSource` interface — injectable enrichment source (see `WithHintSource`)
 - `DefaultHintSource` — struct with configurable `LeasesPath` / `ARPCommand` / `CacheTTL`
+- `ConfigError` struct (since v0.9.0) — `{Field, Value, Reason}`; reachable via `errors.As` from `Config.Validate` / `Run` / sentinel `ErrInvalidConfig`
 - Sentinel errors: `ErrHandlerRequired`, `ErrInvalidConfig`, `ErrNoFetcher`, `ErrFetchFailed`, `ErrAlreadyRunning`
 
 ### Constructors / constructor-like
@@ -29,7 +31,7 @@ Types and functions used by **library consumers** — these must be preserved ac
 - `New(opts ...Option) *Watcher`
 - `DefaultConfig() Config`
 - `Config.Validate() error`
-- All `WithXxx` / `OnXxx` options (including `WithHintSource` since v0.7.0)
+- All `WithXxx` / `OnXxx` options (including `WithHintSource` since v0.7.0, `WithLogger` since v0.9.0)
 
 ### Watcher methods
 

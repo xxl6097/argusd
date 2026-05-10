@@ -17,6 +17,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.0] - 2026-05-10
+
+Focus on **observability polish**: structured logging hook and
+field-level config validation errors. Both are purely additive —
+existing consumers see no behavior change.
+
+### Added · 新增
+
+- **Structured logging hook** — `LoggerHandler` / `LogLevel` /
+  `LogAttr` types and `WithLogger(LoggerHandler) Option`:
+  ```go
+  argus.WithLogger(func(ctx context.Context, level argus.LogLevel, msg string, attrs ...argus.LogAttr) {
+      slog.LogAttrs(ctx, slog.Level(level), msg, toSlog(attrs)...)
+  })
+  ```
+  The library emits at Info (watcher starting, fetcher detected,
+  watcher stopped), Warn (syslog buffer overflow, fetch tick failed,
+  stop timeout), and Error (detect failure). The **hot decision
+  path does NOT log** — every emission is a lifecycle or
+  recoverable-anomaly event. When `WithLogger` is unregistered
+  (default), log call sites bail on a single nil check. Logger
+  panics are recovered; they never kill the caller. Adapters for
+  `log/slog`, `zap`, and `zerolog` are all ~5 lines. (`logger.go`)
+
+- **`ConfigError` struct** — `{Field, Value, Reason}` with
+  `errors.As` support. `Config.Validate` now returns a
+  `*ConfigError` (still unwraps to `ErrInvalidConfig` for existing
+  `errors.Is` callers):
+  ```go
+  var ce *argus.ConfigError
+  if errors.As(err, &ce) {
+      formErrors[ce.Field] = ce.Reason  // "must be > 0"
+  }
+  ```
+  Intended for web config UIs and form-level validation feedback;
+  previously consumers had to regex-match `error.Error()` to
+  identify the offending field. (`errors.go`, `watcher.go:Validate`)
+
+- **`ExampleWithLogger`** and **`ExampleConfigError`** — godoc
+  examples demonstrating both new facilities. The ConfigError
+  example has an `// Output:` directive verifying the message
+  format, so it's regression-locked. (`example_test.go`)
+
+- **Tests** (`logger_test.go`, 5 tests):
+  - `TestLoggerReceivesLifecycleEvents` — Run emits `watcher starting` at Info
+  - `TestLoggerPanicIsolated` — panicking logger doesn't kill Run
+  - `TestLoggerNilIsZeroCost` — unregistered logger is a no-op
+  - `TestConfigErrorExposesFieldViaAs` — errors.As extracts *ConfigError
+  - `TestConfigErrorFromRunIsUnwrappable` — errors.Is still works for coarse matching
+
+### Changed · 变更
+
+- `Config.Validate` — error type changed from `fmt.Errorf(...)` to
+  `*ConfigError`. This is **non-breaking** for existing consumers:
+  the `error` interface is unchanged, `errors.Is(err, ErrInvalidConfig)`
+  still works, and the `Error()` string is stable in format
+  (`argus: invalid config: <reason> (field=<name> value=<v>)`).
+  New field-level extraction via `errors.As` is the added value.
+- `Run` — no longer double-wraps the `Validate` error with
+  `fmt.Errorf("%w: %v", ErrInvalidConfig, err)`. Returns the
+  `*ConfigError` directly so `errors.As(err, &ConfigError{})` works
+  at the Run call site. `errors.Is(err, ErrInvalidConfig)` behavior
+  is preserved via `(*ConfigError).Unwrap`.
+
+### Documentation
+
+- `STABILITY.md` Stable surface extended with `LoggerHandler` /
+  `LogLevel` / `LogAttr` / `ConfigError` / `WithLogger`.
+
+---
+
 ## [0.8.0] - 2026-05-10
 
 Focus on **adoption readiness**: explicit Go version support policy,
@@ -570,7 +641,8 @@ Initial public release · 首次公开发布。
 Link references (kept at the bottom for readability).
 -->
 
-[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/xxl6097/argusd/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/xxl6097/argusd/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/xxl6097/argusd/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/xxl6097/argusd/compare/v0.5.0...v0.6.0
