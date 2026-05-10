@@ -1,15 +1,22 @@
 // Command argusd is the reference consumer of the argus library.
 // 启动时打印一次设备列表, 之后通过回调实时打印上线 / 离线 / 状态变更事件。
 // 同时监听 OpenWrt 系统日志, 捕获 WiFi 关联 / 断开 / DHCP 分配等底层事件。
+//
+// 信号:
+//   - SIGINT  / SIGTERM: 优雅退出
+//   - SIGHUP:            停止并重启 Watcher (保留 known / cooldown / 已探测 Fetcher)
 package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	owrt "github.com/xxl6097/argus"
 )
@@ -18,8 +25,14 @@ func main() {
 	log.SetFlags(log.LstdFlags)
 	owrt.SetupLocalTimezone()
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	// SIGINT / SIGTERM 触发整体退出
+	exitCtx, stopExit := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopExit()
+
+	// SIGHUP 触发 Stop + Run 重启 (热重载模式, 保留 known/cooldown)
+	sighup := make(chan os.Signal, 1)
+	signal.Notify(sighup, syscall.SIGHUP)
+	defer signal.Stop(sighup)
 
 	w := owrt.New(
 		owrt.OnFetcherDetected(func(k owrt.FetcherKind) {
@@ -28,7 +41,7 @@ func main() {
 		owrt.WithDecisionHandler(onDecision),
 	)
 
-	devices, err := w.List(ctx)
+	devices, err := w.List(exitCtx)
 	if err != nil {
 		log.Fatalf("初始拉取失败: %v", err)
 	}
@@ -36,16 +49,54 @@ func main() {
 
 	// 启动外部系统日志监听用于展示 (库内部的 syslog 已自动纳入离线判断)
 	go func() {
-		if err := owrt.WatchSyslog(ctx, onSyslog, onError); err != nil {
+		if err := owrt.WatchSyslog(exitCtx, onSyslog, onError); err != nil {
 			log.Printf("系统日志监听异常退出: %v", err)
 		}
 	}()
 
-	log.Println("开始监听设备状态变化, Ctrl+C 退出 ...")
-	if err := w.Run(ctx, onEvent, onError); err != nil {
-		log.Fatalf("监听异常退出: %v", err)
+	log.Println("开始监听设备状态变化, Ctrl+C 退出, SIGHUP 重启 ...")
+	generation := 1
+	for {
+		// 每一轮 Run 用一个派生 ctx, 可被 SIGHUP 单独取消而不影响 exitCtx
+		runCtx, cancelRun := context.WithCancel(exitCtx)
+		runDone := make(chan error, 1)
+		go func() { runDone <- w.Run(runCtx, onEvent, onError) }()
+
+		select {
+		case err := <-runDone:
+			cancelRun()
+			if err != nil && !errors.Is(err, context.Canceled) {
+				log.Fatalf("监听异常退出: %v", err)
+			}
+			log.Println("收到退出信号, 程序结束")
+			return
+
+		case <-exitCtx.Done():
+			// SIGINT / SIGTERM: 等当前 Run 退出再返回
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = w.Stop(stopCtx)
+			stopCancel()
+			cancelRun()
+			<-runDone
+			log.Println("收到退出信号, 程序结束")
+			return
+
+		case <-sighup:
+			// SIGHUP: 停 Watcher, 打印快照, 继续下一轮 Run (保留 known / cooldown)
+			log.Printf("收到 SIGHUP, 重启 Watcher (第 %d 轮 → 第 %d 轮)", generation, generation+1)
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := w.Stop(stopCtx); err != nil {
+				log.Printf("Stop 超时: %v", err)
+			}
+			stopCancel()
+			cancelRun()
+			<-runDone // 等 Run 真正返回
+			snap := w.Known()
+			log.Printf("[重启] 保留 %d 台已知设备, 冷却/抖动状态亦保留, 瞬态计数已重置", len(snap))
+			generation++
+			// 继续 for 循环, 开始下一轮 Run
+		}
 	}
-	log.Println("收到退出信号, 程序结束")
 }
 
 // onEvent 是库回调的事件处理函数, 演示如何按事件类型展示信息。
