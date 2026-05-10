@@ -17,6 +17,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.13.1] - 2026-05-10
+
+Patch release. Responsive rework of the embedded dashboard so the
+HTTP UI reads well on phones. No library / API changes; single-file
+change to `argusweb/assets/dashboard.html`.
+
+### Fixed · 修复
+
+- **Mobile UX** for the built-in Web UI (`argusweb`):
+  - 5-column device table collapses into stacked **cards** below the
+    640 px breakpoint. Each card shows MAC + RSSI on the top row,
+    hostname + IP on the second, radio / SSID / wired badge on the
+    third, with proper wrapping for long hostnames (previously the
+    desktop table forced horizontal scroll on narrow viewports).
+  - Header: status pills stack below the title on narrow screens
+    (previously they pushed off the right edge).
+  - Events list: grid-template-areas layout so timestamp + pill
+    stay on line 1, MAC + detail on line 2, instead of a single
+    overflowing line. Page-level scrolling on mobile (removed the
+    inner `max-height: 70vh` overflow container on narrow
+    viewports — mobile users expect to swipe the page, not a
+    nested region).
+  - `viewport-fit=cover` + `env(safe-area-inset-*)` padding so the
+    layout respects iPhone notches / home-bar. `theme-color`
+    matches the dark background so the iOS status bar blends.
+  - Long hostnames / MACs now `word-break: break-all` instead of
+    forcing horizontal scroll.
+
+Desktop layout is unchanged above 640 px — same 2-column grid,
+same table, same SSE event list.
+
+---
+
 ## [0.13.0] - 2026-05-10
 
 Focus on **built-in dashboard**: a zero-dependency, single-file HTTP +
@@ -881,7 +914,8 @@ Initial public release · 首次公开发布。
 Link references (kept at the bottom for readability).
 -->
 
-[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.13.1...HEAD
+[0.13.1]: https://github.com/xxl6097/argusd/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/xxl6097/argusd/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/xxl6097/argusd/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/xxl6097/argusd/compare/v0.10.0...v0.11.0
