@@ -17,6 +17,131 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.15.0] - 2026-05-10
+
+User request: dashboard should show device vendor and let me set a
+static IP from the UI. The first is a column addition; the second is
+a new mutating API that touches the router's `/etc/config/dhcp` and
+reloads dnsmasq, gated behind the same auth predicate as the alias
+write API.
+
+Library API and semantics unchanged. All new code lives in
+`argusweb`; the static-IP feature auto-disables when not running on
+OpenWrt (no `uci` in `$PATH` or `/etc/config/dhcp` unreadable).
+
+### Added · 新增
+
+- **Vendor column** in the Known Devices list. Desktop table gains
+  a "厂商 · Vendor" column populated from `Device.Vendor` (already
+  in the library/JSON since v0.6.0). Mobile cards add a third row
+  showing "厂商 <vendor>". Wired devices and rows without vendor
+  data show "—".
+
+- **`DHCPManager` interface** for static DHCP reservations:
+  ```go
+  type DHCPManager interface {
+      List(ctx) (map[string]StaticLease, error)
+      Set(ctx, StaticLease) error
+      Delete(ctx, mac string) error
+  }
+  ```
+  Plus `StaticLease{MAC, IP, Name}` struct, `WithDHCPManager(m)`
+  Option, and `ErrDHCPManagerUnavailable` sentinel for graceful
+  fallback on non-OpenWrt hosts.
+
+- **`UCIDHCPManager`** — OpenWrt implementation:
+  - Constructor `NewUCIDHCPManager()` probes `uci show dhcp` and
+    returns `ErrDHCPManagerUnavailable` when not on an OpenWrt box
+  - Set/Delete are serialized (single internal mutex), apply on
+    `/etc/config/dhcp` via uci, then reload dnsmasq
+  - New entries created as named sections (`dhcp.argus_<mac-suffix>`)
+    so writes are idempotent and don't shift indices when other
+    entries are added/removed by LuCI or the user
+  - Updates of existing anonymous `dhcp.@host[N]` entries (typically
+    created by LuCI before argusd was installed) update in place
+    without renaming
+  - Defense-in-depth: every mutation is preceded by `uci revert dhcp`
+    and reverted on error, so failed POSTs leave no pending state
+  - Strict input validation against shell/uci injection: MAC matches
+    `aa:bb:cc:dd:ee:ff`, IP via `net.ParseIP` + IPv4 check, name
+    `[A-Za-z0-9_-]{0,63}`. Names with spaces or shell metachars are
+    rejected with 400.
+
+- **`/api/dhcp` HTTP routes**:
+  - `GET /api/dhcp` — list current reservations as
+    `{"leases": {MAC(upper): {mac, ip, name}, ...}}`
+  - `POST /api/dhcp` `{"mac": "...", "ip": "...", "name": "..."}`
+    — create/update a reservation. Empty name auto-generates
+    `argus-<mac-suffix>`. Gated by write-auth.
+  - `DELETE /api/dhcp?mac=...` — remove a reservation. Gated.
+  - `503` when the server was built without `WithDHCPManager`.
+
+- **`/api/devices` capabilities block** — top-level body now
+  includes `"capabilities": {"aliases": bool, "dhcp": bool}` so the
+  dashboard knows which features to surface (e.g. hide the static-IP
+  button on hosts without a DHCP manager).
+
+- **Dashboard static-IP UI**:
+  - A 📌 button next to each device's IP opens a modal:
+    "静态 IP · Static IP" prefilled with current IP and existing
+    reservation name (if any). Save / Remove (when a reservation
+    exists) / Cancel buttons. Enter saves; Esc cancels.
+  - When a device has a static reservation, its IP cell shows
+    🔒 prefix in accent color so you can tell at a glance which
+    devices are pinned.
+  - The pencil ✎ rename button (v0.14.0) is unaffected — both
+    affordances coexist.
+
+- **`argusd` auto-detect** — `argusd -listen=...` now probes for
+  `uci` at startup and silently wires `UCIDHCPManager` when
+  available; logs `DHCP 静态租约管理已启用 (uci)` on success or
+  the detection failure on stderr. Dev laptops see the latter and
+  the dashboard hides the 📌 button.
+
+### Tests
+
+- 14 new test cases in `argusweb/dhcp_test.go`:
+  - Parser: 4 cases covering multi-host output, incomplete entries,
+    unrelated sections, and named sections
+  - Validators: MAC / IPv4 / name with explicit bad inputs (shell
+    injection, oversized names) — confirms refusal
+  - HTTP routes: GET returns leases, POST writes, POST rejects bad
+    IP, DELETE removes, 503 without manager, 403 with denying auth
+  - `NewUCIDHCPManager` returns wrapped `ErrDHCPManagerUnavailable`
+    when `uci` is missing from PATH
+  - Capabilities block correctly advertises feature availability
+
+### End-to-end UAT (MT7981 router)
+
+Verified:
+- `argusd` auto-enables DHCP management at startup ✅
+- POST creates `dhcp.argus_<suffix>=host` entry, commits, reloads
+  dnsmasq ✅
+- POST same MAC with new name updates in place (no duplicate
+  section) ✅
+- DELETE removes the section cleanly ✅
+- Final `uci show dhcp` matches pre-test state — no leftovers ✅
+- `/api/devices` carries `capabilities.dhcp=true` and `vendor`
+  column data ✅
+
+### Caveats
+
+- **OpenWrt-specific.** The dashboard's 📌 button is hidden and
+  `/api/dhcp` returns 503 on hosts without `uci` (Debian routers,
+  pfSense, dev laptops). A user implementing `DHCPManager` against
+  another platform's CLI/socket can wire it via `WithDHCPManager`.
+- **dnsmasq reload is non-instantaneous.** A new reservation takes
+  effect on the device's next DHCP renewal (typically ≤ leasetime
+  seconds after the device next requests its lease). Existing
+  leases remain bound to the previously-allocated IP until they
+  renew.
+- **Subnet validation is not performed.** The implementation only
+  validates IPv4 syntax, not membership in the LAN subnet. An IP
+  outside the configured DHCP pool will be persisted but ignored
+  by dnsmasq. Future versions may add subnet checks.
+
+---
+
 ## [0.14.0] - 2026-05-10
 
 User request: devices using iOS 15+/Android 10+ "private WiFi
@@ -1084,7 +1209,8 @@ Initial public release · 首次公开发布。
 Link references (kept at the bottom for readability).
 -->
 
-[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/xxl6097/argusd/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/xxl6097/argusd/compare/v0.13.3...v0.14.0
 [0.13.3]: https://github.com/xxl6097/argusd/compare/v0.13.2...v0.13.3
 [0.13.2]: https://github.com/xxl6097/argusd/compare/v0.13.1...v0.13.2

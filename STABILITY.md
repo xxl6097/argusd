@@ -70,15 +70,18 @@ Types and functions used by **library consumers** — these must be preserved ac
     - (since v0.13.3) `WithOfflineRetention(d time.Duration)`, `WithOfflineMax(n int)` — how long and how many offline devices are retained in `/api/devices` (default 7 days, 512 entries)
     - (since v0.14.0) `WithAliases(*AliasStore)` — attach a user-managed MAC-to-friendly-name map
     - (since v0.14.0) `WithWriteAuth(func(*http.Request) bool)` — gate mutating APIs; default allows loopback + RFC1918
+    - (since v0.15.0) `WithDHCPManager(DHCPManager)` — attach a router-specific static-lease backend
   - `(*Server).ServeHTTP` / `OnEvent(Event)` / `Shutdown(ctx)`
   - `argusweb.NewAliasStore(path string) *AliasStore` + `(*AliasStore).Lookup / Set / All` (since v0.14.0); file-backed, case-insensitive MAC keys, atomic writes
+  - `argusweb.DHCPManager` interface + `StaticLease` struct (since v0.15.0); `argusweb.NewUCIDHCPManager()` returns an OpenWrt-specific implementation or `ErrDHCPManagerUnavailable` on non-OpenWrt hosts
   - HTTP surface: `GET /` (dashboard HTML), `GET /api/devices`
     (JSON snapshot keyed by stable JSON field names), `GET /api/events`
     (Server-Sent Events stream of Online/Offline/Change; event name
     matches `EventKind.String()`), `GET|POST|DELETE /api/aliases`
-    (MAC ↔ friendly-name CRUD; writes gated by `WithWriteAuth`)
-  - `/api/devices` (stable wire shape since v0.13.3):
-    - Body: `{"count": N, "online": N, "offline": N, "devices": [...]}`
+    (MAC ↔ friendly-name CRUD; writes gated by `WithWriteAuth`),
+    `GET|POST|DELETE /api/dhcp` (static DHCP reservation CRUD; writes gated by `WithWriteAuth`; 503 when no DHCPManager attached)
+  - `/api/devices` (stable wire shape):
+    - Body: `{"count": N, "online": N, "offline": N, "capabilities": {"aliases": bool, "dhcp": bool}, "devices": [...]}` (`capabilities` since v0.15.0)
     - Row includes `status` (`"online"` | `"offline"`), optional
       `offline_at_ms` (unix-ms, set when status=="offline"), and
       optional `alias` (user-defined name, since v0.14.0)
@@ -89,6 +92,11 @@ Types and functions used by **library consumers** — these must be preserved ac
     - `POST {"mac": "...", "name": "..."}` sets/clears an alias (empty name deletes)
     - `DELETE ?mac=...` deletes an alias
     - `503` when the server was built without `WithAliases`
+  - `/api/dhcp` (stable wire shape since v0.15.0):
+    - `GET` returns `{"leases": {MAC(upper): {mac, ip, name}, ...}}`
+    - `POST {"mac": "...", "ip": "...", "name": "..."}` creates or updates a static reservation. Name optional (auto-generated "argus-<mac-suffix>" when omitted). 400 on invalid MAC/IP/name.
+    - `DELETE ?mac=...` removes a reservation
+    - `503` when the server was built without `WithDHCPManager`
   - Zero third-party deps; single embedded HTML file with vanilla JS
 
 ### JSON serialization (stable from v0.6.0)

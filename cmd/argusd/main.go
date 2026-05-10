@@ -111,6 +111,14 @@ func main() {
 		opts := []argusweb.Option{
 			argusweb.WithAliases(argusweb.NewAliasStore(*aliasesPath)),
 		}
+		// Auto-detect OpenWrt uci; enable /api/dhcp + dashboard static-IP
+		// button when available, silently skip otherwise (dev laptops).
+		if dhcp, err := argusweb.NewUCIDHCPManager(); err == nil {
+			opts = append(opts, argusweb.WithDHCPManager(dhcp))
+			log.Println("DHCP 静态租约管理已启用 (uci)")
+		} else {
+			log.Printf("DHCP 静态租约管理未启用: %v", err)
+		}
 		web = argusweb.NewServer(w, opts...)
 		httpSrv = &http.Server{
 			Addr:         *listen,

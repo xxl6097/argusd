@@ -102,6 +102,16 @@ func WithWriteAuth(check AuthCheck) Option {
 	return func(s *Server) { s.writeAuth = check }
 }
 
+// WithDHCPManager attaches a router-specific DHCP manager (typically
+// a *UCIDHCPManager produced by NewUCIDHCPManager). When set,
+// `/api/dhcp` is enabled and the dashboard surfaces a "set static IP"
+// button on every device row. Passing nil is a no-op (equivalent to
+// the default — the endpoint returns 503 and the dashboard hides
+// the button).
+func WithDHCPManager(m DHCPManager) Option {
+	return func(s *Server) { s.dhcp = m }
+}
+
 // Server is an http.Handler that serves the argus dashboard + API.
 // Embed it in your own http.ServeMux or pass it directly to
 // http.ListenAndServe.
@@ -129,6 +139,11 @@ type Server struct {
 	// When non-nil, /api/devices rows carry an `alias` field and the
 	// dashboard prefers it for display. nil means "no alias feature".
 	aliases *AliasStore
+
+	// dhcp is an optional router-specific manager for static DHCP
+	// reservations. Exposes /api/dhcp when non-nil; the dashboard
+	// hides the "set static IP" UI when nil.
+	dhcp DHCPManager
 
 	// writeAuth gates mutating APIs (POST/DELETE /api/aliases). nil
 	// means the default LAN policy (loopback + RFC1918).
@@ -180,6 +195,7 @@ func NewServer(w *argus.Watcher, opts ...Option) *Server {
 	s.mux.HandleFunc("/api/devices", s.handleDevices)
 	s.mux.HandleFunc("/api/events", s.handleEvents)
 	s.mux.HandleFunc("/api/aliases", s.handleAliases)
+	s.mux.HandleFunc("/api/dhcp", s.handleDHCP)
 	return s
 }
 
@@ -400,11 +416,21 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(map[string]any{
-		"devices": rows,
-		"count":   len(rows),
-		"online":  onlineCount,
-		"offline": offlineCount,
+		"devices":      rows,
+		"count":        len(rows),
+		"online":       onlineCount,
+		"offline":      offlineCount,
+		"capabilities": s.capabilities(),
 	})
+}
+
+// capabilities tells the dashboard which features it may expose. The
+// fields are part of the Stable wire shape (see STABILITY.md).
+func (s *Server) capabilities() map[string]bool {
+	return map[string]bool{
+		"aliases": s.aliases != nil,
+		"dhcp":    s.dhcp != nil,
+	}
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {

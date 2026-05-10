@@ -81,6 +81,19 @@
     padding: 0 4px; border-radius: 3px; line-height: 1.4;
   }
   .rename-btn:hover { color: var(--accent); background: rgba(78,201,176,0.08); }
+
+  /* Static IP: 🔒 marker (the IP is pinned) + 📌 action button (open modal). */
+  .ip-static     { color: var(--accent); font-weight: 500; }
+  .staticip-btn  {
+    display: inline-block; margin-left: 6px; cursor: pointer;
+    color: var(--muted); font-size: 12px; user-select: none;
+    padding: 0 4px; border-radius: 3px; line-height: 1.4;
+  }
+  .staticip-btn:hover { color: var(--change); background: rgba(229,192,123,0.12); }
+
+  /* Vendor column: compact, muted; matches the body font */
+  td.vendor { color: var(--muted); font-size: 12px; word-break: break-all; }
+  .card-row .cr-vendor { grid-area: vendor; font-size: 11px; color: var(--muted); word-break: break-all; }
   .rename-form  { display: inline-flex; gap: 4px; align-items: center; vertical-align: middle; }
   .rename-form input {
     background: #0e1014; color: var(--fg); border: 1px solid var(--line);
@@ -105,9 +118,10 @@
     display: grid; gap: 4px 10px;
     grid-template-columns: 1fr auto;
     grid-template-areas:
-      "mac   status"
-      "host  host"
-      "link  rssi";
+      "mac    status"
+      "host   host"
+      "vendor vendor"
+      "link   rssi";
   }
   .card-row .cr-mac    { grid-area: mac;    font-family: ui-monospace, Menlo, monospace; font-size: 13px; font-weight: 500; }
   .card-row .cr-status { grid-area: status; justify-self: end; }
@@ -143,6 +157,49 @@
     border-top: 1px solid var(--line);
   }
   footer code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 3px; font-size: 11px; }
+
+  /* ---------- Static-IP modal ---------- */
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 9999; padding: 16px;
+    animation: fadeIn 0.12s ease-out;
+  }
+  @keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
+  .modal {
+    background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+    padding: 20px; width: 100%; max-width: 380px;
+    box-shadow: 0 10px 32px rgba(0,0,0,0.6);
+  }
+  .modal-title { font-size: 15px; font-weight: 500; color: var(--accent); margin-bottom: 4px; }
+  .modal-sub   { font-size: 11px; color: var(--muted); margin-bottom: 14px; }
+  .modal-sub code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 3px; }
+  .modal-field { display: block; margin-bottom: 12px; }
+  .modal-field span { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+  .modal-field input {
+    width: 100%; background: #0e1014; color: var(--fg);
+    border: 1px solid var(--line); border-radius: 4px;
+    padding: 6px 8px; font-size: 13px; font-family: inherit;
+  }
+  .modal-field input:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+  .modal-hint {
+    font-size: 11px; color: var(--muted);
+    background: rgba(229,192,123,0.08); border-left: 2px solid var(--change);
+    padding: 6px 10px; border-radius: 2px; margin-bottom: 14px;
+  }
+  .modal-actions {
+    display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap;
+  }
+  .modal-actions button {
+    background: none; border: 1px solid var(--line); color: var(--fg);
+    padding: 6px 12px; font-size: 12px; border-radius: 4px; cursor: pointer;
+    font-family: inherit;
+  }
+  .modal-actions button:hover  { border-color: var(--muted); }
+  .modal-actions .btn-primary  { background: var(--accent); color: #0e1014; border-color: var(--accent); font-weight: 500; }
+  .modal-actions .btn-primary:hover { opacity: 0.9; }
+  .modal-actions .btn-danger   { color: var(--offline); border-color: rgba(240,113,120,0.4); }
+  .modal-actions .btn-danger:hover { background: rgba(240,113,120,0.1); }
 
   /* ---------- Mobile breakpoint ---------- */
   @media (max-width: 640px) {
@@ -180,6 +237,7 @@
       <thead><tr>
         <th>状态 · Status</th>
         <th>MAC</th><th>IP</th><th>主机名 · Host</th>
+        <th>厂商 · Vendor</th>
         <th>信号 · RSSI</th><th>类型 · Link</th>
       </tr></thead>
       <tbody id="devices-body"></tbody>
@@ -238,6 +296,8 @@
 
   function renderDevices(rows) {
     let onlineN = 0, offlineN = 0;
+    const caps = window._caps || {};
+    const leases = window._staticLeases || {};
 
     // Desktop table
     elBody.innerHTML = "";
@@ -253,8 +313,9 @@
       tr.innerHTML =
         '<td>' + statusPill + '</td>' +
         '<td class="mac">' + esc(d.mac) + '</td>' +
-        '<td>' + esc(d.ip || "—") + '</td>' +
+        '<td class="ip-cell">' + ipCell(d, caps, leases) + '</td>' +
         '<td class="host">' + hostCell(d) + '</td>' +
+        '<td class="vendor">' + esc(d.vendor || "—") + '</td>' +
         '<td class="' + rssiClass(d.rssi) + '">' + esc(rssiText(d)) + '</td>' +
         '<td>' + esc(linkText(d)) + '</td>';
       elBody.appendChild(tr);
@@ -267,14 +328,17 @@
       const card = document.createElement("div");
       card.className = "card-row" + (isOff ? " is-offline" : "");
       card.dataset.mac = d.mac;
-      const ip   = d.ip || "—";
       const statusPill = isOff
         ? '<span class="pill offline">离线 ' + esc(relativeTime(d.offline_at_ms)) + '</span>'
         : '<span class="pill online">在线</span>';
+      const vendorRow = d.vendor
+        ? '<div class="cr-vendor">厂商 ' + esc(d.vendor) + '</div>'
+        : '';
       card.innerHTML =
         '<div class="cr-mac">' + esc(d.mac) + '</div>' +
         '<div class="cr-status">' + statusPill + '</div>' +
-        '<div class="cr-host">' + hostCell(d) + ' <span class="ip">· ' + esc(ip) + '</span></div>' +
+        '<div class="cr-host">' + hostCell(d) + ' <span class="ip">· ' + ipCell(d, caps, leases) + '</span></div>' +
+        vendorRow +
         '<div class="cr-link">' + esc(linkText(d)) + '</div>' +
         '<div class="cr-rssi ' + rssiClass(d.rssi) + '">' + esc(rssiText(d)) + '</div>';
       elCards.appendChild(card);
@@ -282,6 +346,23 @@
 
     elCountOnline.textContent  = "在线 " + onlineN;
     elCountOffline.textContent = "离线 " + offlineN;
+  }
+
+  // ipCell renders the IP with an optional 🔒 lock icon indicating
+  // the device has a static reservation, and a pencil-like "📌" button
+  // to open the static-IP modal when the server supports it.
+  function ipCell(d, caps, leases) {
+    const ip = d.ip || "—";
+    const lease = leases[d.mac];
+    const isStatic = !!lease;
+    let html = esc(ip);
+    if (isStatic) {
+      html = '<span class="ip-static" title="已静态分配 Static">🔒 ' + esc(ip) + '</span>';
+    }
+    if (caps.dhcp) {
+      html += '<span class="staticip-btn" data-action="staticip" title="设为静态 IP · set static IP">📌</span>';
+    }
+    return html;
   }
 
   // hostCell builds the hostname cell with an optional alias prefix
@@ -306,14 +387,117 @@
 
   // Delegate click events on pencil buttons to toggle inline rename form.
   document.addEventListener("click", ev => {
-    const btn = ev.target.closest(".rename-btn");
-    if (!btn) return;
-    const host = btn.closest(".host, .cr-host");
-    if (!host) return;
-    const row  = btn.closest("[data-mac]");
-    if (!row) return;
-    openRenameForm(host, row.dataset.mac);
+    const renameBtn = ev.target.closest(".rename-btn");
+    if (renameBtn) {
+      const host = renameBtn.closest(".host, .cr-host");
+      const row  = renameBtn.closest("[data-mac]");
+      if (host && row) openRenameForm(host, row.dataset.mac);
+      return;
+    }
+    const staticBtn = ev.target.closest(".staticip-btn");
+    if (staticBtn) {
+      const row = staticBtn.closest("[data-mac]");
+      if (row) openStaticIPModal(row.dataset.mac);
+      return;
+    }
   });
+
+  // openStaticIPModal shows a lightweight modal over the page asking
+  // for an IP to reserve. Prefilled with the device's current IP.
+  function openStaticIPModal(mac) {
+    const leases = window._staticLeases || {};
+    const existing = leases[mac];
+    const row = document.querySelector('[data-mac="' + cssEsc(mac) + '"]');
+    const currentIP = (() => {
+      if (existing) return existing.ip;
+      const ipCell = row && row.querySelector(".ip-cell");
+      if (!ipCell) return "";
+      // strip the 🔒/📌 glyphs, trim; the IP is the first token that parses
+      const m = ipCell.textContent.match(/\d+\.\d+\.\d+\.\d+/);
+      return m ? m[0] : "";
+    })();
+
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    overlay.innerHTML =
+      '<div class="modal">' +
+      '<div class="modal-title">静态 IP · Static IP</div>' +
+      '<div class="modal-sub">MAC: <code>' + esc(mac) + '</code></div>' +
+      '<label class="modal-field">' +
+      '  <span>IP 地址 · IPv4</span>' +
+      '  <input type="text" id="modal-ip" value="' + esc(currentIP) + '" placeholder="192.168.10.50" />' +
+      '</label>' +
+      '<label class="modal-field">' +
+      '  <span>名称 · Name (可选 optional)</span>' +
+      '  <input type="text" id="modal-name" maxlength="63" placeholder="argus-auto" value="' + esc(existing ? existing.name : "") + '" />' +
+      '</label>' +
+      '<div class="modal-hint">保存后网关会重载 dnsmasq。租约类型: infinite (永久)。</div>' +
+      '<div class="modal-actions">' +
+      (existing ? '<button data-act="remove" class="btn-danger">移除静态 Remove</button>' : '') +
+      '<button data-act="cancel">取消 Cancel</button>' +
+      '<button data-act="save"   class="btn-primary">保存 Save</button>' +
+      '</div>' +
+      '</div>';
+    document.body.appendChild(overlay);
+
+    const close = () => overlay.remove();
+    const ipIn = overlay.querySelector("#modal-ip");
+    const nameIn = overlay.querySelector("#modal-name");
+    ipIn.focus();
+    ipIn.select();
+
+    const doPost = async (body) => {
+      try {
+        const r = await fetch("/api/dhcp", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(body),
+        });
+        if (!r.ok) {
+          const b = await r.json().catch(() => ({}));
+          alert("操作失败 Failed: " + (b.error || r.status));
+          return;
+        }
+        close();
+        reloadDevices();
+      } catch (e) {
+        alert("网络错误 Network error: " + e.message);
+      }
+    };
+    const doDelete = async () => {
+      try {
+        const r = await fetch("/api/dhcp?mac=" + encodeURIComponent(mac), {method: "DELETE"});
+        if (!r.ok) {
+          const b = await r.json().catch(() => ({}));
+          alert("移除失败 Remove failed: " + (b.error || r.status));
+          return;
+        }
+        close();
+        reloadDevices();
+      } catch (e) {
+        alert("网络错误 Network error: " + e.message);
+      }
+    };
+
+    overlay.addEventListener("click", ev => {
+      if (ev.target === overlay) { close(); return; }
+      const b = ev.target.closest("button");
+      if (!b) return;
+      if (b.dataset.act === "cancel") close();
+      if (b.dataset.act === "save")   doPost({mac, ip: ipIn.value.trim(), name: nameIn.value.trim()});
+      if (b.dataset.act === "remove") doDelete();
+    });
+    overlay.addEventListener("keydown", ev => {
+      if (ev.key === "Escape") close();
+      if (ev.key === "Enter" && ev.target.tagName === "INPUT") {
+        doPost({mac, ip: ipIn.value.trim(), name: nameIn.value.trim()});
+      }
+    });
+  }
+
+  // cssEsc escapes a value for safe use inside a CSS attribute-selector
+  // string. We only need to escape characters with special meaning in
+  // attribute values; MAC addresses never contain any of them.
+  function cssEsc(s) { return String(s).replace(/"/g, '\\"'); }
 
   function openRenameForm(hostEl, mac) {
     // Preserve the current content so Cancel can restore it.
@@ -388,6 +572,20 @@
     try {
       const r = await fetch("/api/devices", { cache: "no-store" });
       const body = await r.json();
+      window._caps = body.capabilities || {};
+      // Fetch static leases opportunistically. Silence 503s when the
+      // server lacks a DHCP manager (non-OpenWrt host).
+      if (window._caps.dhcp) {
+        try {
+          const lr = await fetch("/api/dhcp", { cache: "no-store" });
+          if (lr.ok) {
+            const lb = await lr.json();
+            window._staticLeases = lb.leases || {};
+          }
+        } catch (_) { /* non-fatal */ }
+      } else {
+        window._staticLeases = {};
+      }
       renderDevices(body.devices || []);
     } catch (err) {
       console.warn("reload failed", err);
