@@ -200,6 +200,17 @@ func (s *stubDHCP) Set(ctx context.Context, l StaticLease) error {
 	if _, err := validateIPv4(l.IP); err != nil {
 		return err
 	}
+	// Mirror the real manager's IP-conflict guard so HTTP-level
+	// tests of the 409 path don't depend on UCIDHCPManager being
+	// instantiable (it isn't, off-OpenWrt).
+	for otherMAC, other := range s.state {
+		if otherMAC == mac {
+			continue
+		}
+		if other.IP == l.IP {
+			return &ErrIPAlreadyReserved{IP: l.IP, OwnerMAC: otherMAC}
+		}
+	}
 	s.state[mac] = StaticLease{MAC: mac, IP: l.IP, Name: l.Name}
 	return nil
 }
@@ -470,5 +481,127 @@ func TestPruneLeaseFile_NoMatchIsNoOp(t *testing.T) {
 	if !before.ModTime().Equal(after.ModTime()) {
 		t.Errorf("file was rewritten when no match; mtimes before=%v after=%v",
 			before.ModTime(), after.ModTime())
+	}
+}
+
+// --- v0.15.3: IP conflict detection + FNV hash suffix ----------------
+//
+// These tests enforce the invariants the pre-v0.15.3 code lacked. The
+// live router outage that prompted the fix was: two different MACs
+// both had a static reservation for 192.168.10.2. odhcpd rejected the
+// entire /etc/config/dhcp on next reload, breaking DHCP for every
+// device on the LAN. The conflict check in Set now rejects the second
+// write with ErrIPAlreadyReserved.
+
+func TestSetRejectsIPConflict(t *testing.T) {
+	stub := newStubDHCP()
+	stub.state["aa:bb:cc:dd:ee:01"] = StaticLease{
+		MAC: "aa:bb:cc:dd:ee:01", IP: "192.168.10.2", Name: "existing",
+	}
+	err := stub.Set(context.Background(), StaticLease{
+		MAC: "ff:ee:dd:cc:bb:02", IP: "192.168.10.2", Name: "colliding",
+	})
+	var conflict *ErrIPAlreadyReserved
+	if !errors.As(err, &conflict) {
+		t.Fatalf("expected *ErrIPAlreadyReserved, got %T: %v", err, err)
+	}
+	if conflict.IP != "192.168.10.2" {
+		t.Errorf("IP = %q, want 192.168.10.2", conflict.IP)
+	}
+	if conflict.OwnerMAC != "aa:bb:cc:dd:ee:01" {
+		t.Errorf("OwnerMAC = %q, want aa:bb:cc:dd:ee:01", conflict.OwnerMAC)
+	}
+	// The conflicting entry must NOT be in state.
+	if _, exists := stub.state["ff:ee:dd:cc:bb:02"]; exists {
+		t.Error("colliding MAC was written despite conflict")
+	}
+}
+
+func TestSetAllowsUpdateOfOwnReservation(t *testing.T) {
+	// Updating an existing reservation (same MAC) with the same IP
+	// is NOT a conflict — it's a no-op update.
+	stub := newStubDHCP()
+	mac := "aa:bb:cc:dd:ee:01"
+	stub.state[mac] = StaticLease{MAC: mac, IP: "192.168.10.2", Name: "old"}
+	err := stub.Set(context.Background(), StaticLease{
+		MAC: mac, IP: "192.168.10.2", Name: "renamed",
+	})
+	if err != nil {
+		t.Errorf("own-MAC same-IP update should succeed, got %v", err)
+	}
+	if stub.state[mac].Name != "renamed" {
+		t.Errorf("update didn't take effect: %+v", stub.state[mac])
+	}
+}
+
+func TestDHCPPostReturns409OnConflict(t *testing.T) {
+	w := argus.New(argus.WithFetcher(&argustest.FixedFetcher{}))
+	stub := newStubDHCP()
+	stub.state["aa:bb:cc:dd:ee:01"] = StaticLease{
+		MAC: "aa:bb:cc:dd:ee:01", IP: "192.168.10.2",
+	}
+	srv := NewServer(w,
+		WithDHCPManager(stub),
+		WithWriteAuth(func(r *http.Request) bool { return true }),
+	)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	body := []byte(`{"mac":"FF:EE:DD:CC:BB:02","ip":"192.168.10.2"}`)
+	resp, err := http.Post(ts.URL+"/api/dhcp", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	}
+	var r struct {
+		Error    string `json:"error"`
+		IP       string `json:"ip"`
+		OwnerMAC string `json:"owner_mac"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		t.Fatal(err)
+	}
+	if r.IP != "192.168.10.2" || r.OwnerMAC != "AA:BB:CC:DD:EE:01" {
+		t.Errorf("conflict body = %+v", r)
+	}
+}
+
+func TestMACHashSuffixIsStable(t *testing.T) {
+	// Deterministic: same MAC -> same suffix across runs.
+	a := macHashSuffix("aa:bb:cc:dd:ee:ff")
+	b := macHashSuffix("aa:bb:cc:dd:ee:ff")
+	if a != b {
+		t.Errorf("macHashSuffix not stable: %q vs %q", a, b)
+	}
+	if len(a) != 6 {
+		t.Errorf("suffix length = %d, want 6", len(a))
+	}
+}
+
+func TestMACHashSuffixAvoidsLastByteCollision(t *testing.T) {
+	// The pre-v0.15.3 code used only the last 2 bytes of the MAC to
+	// derive the uci section name, causing aa:bb:cc:dd:ee:97 and
+	// ff:ee:dd:cc:bb:97 to collide on argus_ee97. The FNV-32 suffix
+	// must disambiguate these.
+	a := macHashSuffix("aa:bb:cc:dd:ee:97")
+	b := macHashSuffix("ff:ee:dd:cc:bb:97")
+	if a == b {
+		t.Errorf("suffix collision: both -> %q (regression of the v0.15.3 fix)", a)
+	}
+}
+
+// --- v0.15.3: ErrIPAlreadyReserved error surface ---------------------
+
+func TestErrIPAlreadyReservedMessage(t *testing.T) {
+	e := &ErrIPAlreadyReserved{IP: "10.0.0.5", OwnerMAC: "aa:bb:cc:dd:ee:ff"}
+	msg := e.Error()
+	if !strings.Contains(msg, "10.0.0.5") {
+		t.Errorf("error message missing IP: %q", msg)
+	}
+	if !strings.Contains(strings.ToUpper(msg), "AA:BB:CC:DD:EE:FF") {
+		t.Errorf("error message missing MAC: %q", msg)
 	}
 }

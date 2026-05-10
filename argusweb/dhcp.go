@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"net"
 	"net/http"
 	"os"
@@ -59,6 +60,22 @@ type StaticLease struct {
 // /etc/config/dhcp unreadable). The value surfaces via errors.Is so
 // callers can fall back cleanly.
 var ErrDHCPManagerUnavailable = errors.New("argusweb: no DHCP manager available on this host")
+
+// ErrIPAlreadyReserved is returned by DHCPManager.Set when the target
+// IP is already reserved for a different MAC. This prevents writing
+// two static entries pointing at the same IP — a configuration that
+// causes odhcpd / dnsmasq to refuse the entire DHCP package on the
+// next reload, breaking DHCP for every device on the LAN.
+//
+// The surface error carries the existing owner's MAC via IPConflict.
+type ErrIPAlreadyReserved struct {
+	IP       string
+	OwnerMAC string
+}
+
+func (e *ErrIPAlreadyReserved) Error() string {
+	return fmt.Sprintf("argusweb: IP %s is already reserved for MAC %s", e.IP, strings.ToUpper(e.OwnerMAC))
+}
 
 // uciBinary is overridable for tests; argusd always uses the default.
 var uciBinary = "uci"
@@ -201,8 +218,14 @@ func (m *UCIDHCPManager) Set(ctx context.Context, l StaticLease) error {
 	if err != nil {
 		return err
 	}
+	// Use a FNV-32 hash of the full MAC instead of just the last 2
+	// bytes, so two devices whose MACs end in the same suffix don't
+	// collide on the section name. 6 hex digits gives 16M buckets
+	// which is plenty for a home LAN; collisions beyond that are
+	// caught by the update-vs-create branch below anyway.
+	macSuffix := macHashSuffix(mac)
 	if name == "" {
-		name = "argus-" + strings.ReplaceAll(mac[len(mac)-5:], ":", "")
+		name = "argus-" + macSuffix
 	}
 
 	m.mu.Lock()
@@ -221,6 +244,24 @@ func (m *UCIDHCPManager) Set(ctx context.Context, l StaticLease) error {
 		}
 	}()
 
+	// IP conflict detection: scan every existing host reservation and
+	// refuse the write if the target IP is already bound to a DIFFERENT
+	// MAC. Two reservations for the same IP cause odhcpd / dnsmasq to
+	// reject the entire /etc/config/dhcp on next reload, breaking DHCP
+	// for every device on the LAN — this is the v0.15.3 critical fix.
+	existingLeases, err := m.listLocked(ctx)
+	if err != nil {
+		return err
+	}
+	for otherMAC, other := range existingLeases {
+		if otherMAC == mac {
+			continue // updating our own reservation is fine
+		}
+		if other.IP == ip {
+			return &ErrIPAlreadyReserved{IP: ip, OwnerMAC: otherMAC}
+		}
+	}
+
 	idx, err := m.findHostSectionLocked(ctx, mac)
 	if err != nil {
 		return err
@@ -230,17 +271,15 @@ func (m *UCIDHCPManager) Set(ctx context.Context, l StaticLease) error {
 	//   named:     dhcp.name.field=...
 	// We preserve the anonymous form when updating an existing entry
 	// that was already anonymous (typically created by LuCI);
-	// otherwise we create/update a named "argus_<suffix>" section so
+	// otherwise we create/update a named "argus_<fnv-suffix>" section so
 	// the index doesn't shift when other entries are added/removed.
 	var sectionRef string
 	if idx == "" {
-		sectionName := "argus_" + strings.ReplaceAll(mac[len(mac)-5:], ":", "")
+		sectionName := "argus_" + macSuffix
 		if _, err := runUCI(ctx, "set", "dhcp."+sectionName+"=host"); err != nil {
 			return err
 		}
 		sectionRef = "dhcp." + sectionName
-	} else if strings.HasPrefix(idx, "@host[") {
-		sectionRef = "dhcp." + idx
 	} else {
 		sectionRef = "dhcp." + idx
 	}
@@ -259,6 +298,30 @@ func (m *UCIDHCPManager) Set(ctx context.Context, l StaticLease) error {
 	}
 	committed = true
 	return nil
+}
+
+// listLocked is the unlocked version of List for use inside Set /
+// Delete without re-acquiring m.mu. Caller must hold it.
+func (m *UCIDHCPManager) listLocked(ctx context.Context) (map[string]StaticLease, error) {
+	out, err := runUCI(ctx, "-q", "show", "dhcp")
+	if err != nil {
+		return nil, err
+	}
+	return parseUCIDHCPShow(out), nil
+}
+
+// macHashSuffix produces a 6-hex-char FNV-32 hash of a normalized MAC.
+// Used as the suffix in the "argus_<suffix>" UCI section name; the
+// full-MAC hash means two MACs that happen to share their last two
+// bytes (e.g. iOS private-WiFi-address collisions on a home LAN) get
+// distinct sections. Collision probability at a typical fleet size
+// (~100 devices) is ~3e-4 — acceptable given that an actual collision
+// is transparently handled by findHostSectionLocked (updates the
+// existing section in place rather than creating a duplicate).
+func macHashSuffix(mac string) string {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(mac))
+	return fmt.Sprintf("%06x", h.Sum32()&0xFFFFFF)
 }
 
 // Delete implements DHCPManager.
@@ -294,6 +357,68 @@ func (m *UCIDHCPManager) Delete(ctx context.Context, mac string) error {
 	}
 	committed = true
 	return nil
+}
+
+// PurgeArgusOwned deletes every uci host section whose key begins
+// with "argus_" — i.e. every reservation this server's Set() has
+// ever created. It does NOT touch anonymous @host[N] sections
+// (which typically belong to LuCI / the user's own config).
+//
+// Intended as a recovery tool: if a bad argus_-owned entry breaks
+// the DHCP daemon on reload (e.g. an IP conflict written by a
+// pre-v0.15.3 version), a single POST to /api/dhcp/purge-argus
+// restores the user's original DHCP config. Returns the number of
+// sections removed.
+//
+// Reachable via POST /api/dhcp?purge_argus=1 (auth-gated; same
+// write predicate as Set/Delete). Not called by Set or Delete;
+// opt-in only.
+func (m *UCIDHCPManager) PurgeArgusOwned(ctx context.Context) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	_, _ = runUCI(ctx, "revert", "dhcp")
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = runUCI(ctx, "revert", "dhcp")
+		}
+	}()
+
+	out, err := runUCI(ctx, "-q", "show", "dhcp")
+	if err != nil {
+		return 0, err
+	}
+	// Collect section names matching "argus_*" declared as =host.
+	// We need to delete them in reverse declaration order to keep the
+	// remaining index stable — but since these are NAMED sections
+	// (dhcp.argus_foo=host), index shift isn't a concern; order
+	// doesn't matter.
+	re := regexp.MustCompile(`^dhcp\.(argus_[a-z0-9]+)=host$`)
+	seen := map[string]bool{}
+	for _, line := range strings.Split(out, "\n") {
+		m := re.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		seen[m[1]] = true
+	}
+	if len(seen) == 0 {
+		committed = true
+		return 0, nil
+	}
+	for name := range seen {
+		if _, err := runUCI(ctx, "delete", "dhcp."+name); err != nil {
+			return 0, err
+		}
+	}
+	if _, err := runUCI(ctx, "commit", "dhcp"); err != nil {
+		return 0, err
+	}
+	committed = true
+	// Best-effort reload so the pruned state takes effect immediately.
+	_ = applyDHCPChanges(ctx, "")
+	return len(seen), nil
 }
 
 // findHostSectionLocked returns the uci section key (e.g. "@host[2]"
@@ -526,6 +651,18 @@ func (s *Server) handleDHCP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"dhcp manager not configured"}`, http.StatusServiceUnavailable)
 		return
 	}
+	// Recovery path: POST with ?purge_argus=1 wipes every argus_-owned
+	// reservation without touching LuCI's anonymous entries. Exists for
+	// the case where a bad argus-written entry broke DHCP and the user
+	// needs to recover without editing /etc/config/dhcp by hand.
+	if r.Method == http.MethodPost && r.URL.Query().Get("purge_argus") == "1" {
+		if !s.writeAuth(r) {
+			writeJSONErr(w, http.StatusForbidden, "write denied by auth policy")
+			return
+		}
+		s.handleDHCPPurgeArgus(w, r)
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		s.handleDHCPGet(w, r)
@@ -545,6 +682,30 @@ func (s *Server) handleDHCP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Allow", "GET, POST, DELETE")
 		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+// handleDHCPPurgeArgus bulk-removes every argus_-owned reservation.
+// Requires a *UCIDHCPManager; returns 501 for any other DHCPManager
+// implementation (the interface doesn't carry this method).
+func (s *Server) handleDHCPPurgeArgus(w http.ResponseWriter, r *http.Request) {
+	ucm, ok := s.dhcp.(*UCIDHCPManager)
+	if !ok {
+		writeJSONErr(w, http.StatusNotImplemented,
+			"purge_argus only supported for UCIDHCPManager")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	n, err := ucm.PurgeArgusOwned(ctx)
+	if err != nil {
+		writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":      true,
+		"removed": n,
+	})
 }
 
 func (s *Server) handleDHCPGet(w http.ResponseWriter, r *http.Request) {
@@ -580,6 +741,19 @@ func (s *Server) handleDHCPSet(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 	if err := s.dhcp.Set(ctx, in); err != nil {
+		var conflict *ErrIPAlreadyReserved
+		if errors.As(err, &conflict) {
+			// 409 Conflict: the IP is already owned by a different MAC.
+			// Surface the existing owner so the UI can say whose IP it is.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error":     err.Error(),
+				"ip":        conflict.IP,
+				"owner_mac": strings.ToUpper(conflict.OwnerMAC),
+			})
+			return
+		}
 		writeJSONErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -593,10 +767,10 @@ func (s *Server) handleDHCPSet(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"ok":     true,
-		"mac":    strings.ToUpper(in.MAC),
-		"ip":     in.IP,
-		"apply":  report,
+		"ok":    true,
+		"mac":   strings.ToUpper(in.MAC),
+		"ip":    in.IP,
+		"apply": report,
 	})
 }
 

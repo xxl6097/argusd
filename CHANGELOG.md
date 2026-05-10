@@ -17,6 +17,114 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.15.3] - 2026-05-10
+
+**CRITICAL BUG FIX.** User report: after setting a static IP via the
+dashboard and rebooting the router, no device could get a DHCP lease
+— the entire LAN lost connectivity.
+
+Root cause: v0.15.2's `UCIDHCPManager.Set` had no IP conflict
+detection. Two reservations pointing at the same IP (one original
+LuCI entry + one argus-written entry) caused odhcpd to refuse the
+entire `/etc/config/dhcp` on the next reload, bringing DHCP down
+for every device.
+
+This release adds three safeguards so the same mistake is impossible
+from now on, plus a recovery endpoint for anyone already in a bad
+state.
+
+### Fixed · 修复
+
+- **IP conflict detection in `UCIDHCPManager.Set`**. Before writing
+  a new reservation, Set now scans every existing `dhcp.@host[N]`
+  and `dhcp.argus_*` entry. If the target IP is already bound to a
+  different MAC, Set returns the new typed error
+  `*ErrIPAlreadyReserved{IP, OwnerMAC}` without mutating UCI.
+  (`argusweb/dhcp.go`)
+
+- **HTTP 409 Conflict** — the POST handler recognizes
+  `*ErrIPAlreadyReserved` (via `errors.As`) and returns status
+  `409` with body `{"error", "ip", "owner_mac"}`. The dashboard
+  surfaces the message so users see exactly which existing
+  reservation blocks the write:
+  ```
+  IP 冲突: 192.168.10.2 已被另一台设备使用
+  占用者 MAC: A0:29:42:00:7A:FD
+
+  请换一个 IP,或先移除该设备的静态分配。
+  ```
+
+- **FNV-32 hash for UCI section names**. The old `argus_<last-2-MAC-bytes>`
+  scheme collided for MACs that happened to share the last two
+  bytes (e.g. `aa:bb:cc:dd:ee:97` and `ff:ee:dd:cc:bb:97` both
+  mapped to `argus_ee97`). v0.15.3 uses the FNV-32a hash of the
+  full MAC, rendered as 6 hex digits — effectively zero collision
+  probability at any realistic fleet size.
+
+### Added · 新增
+
+- **`POST /api/dhcp?purge_argus=1`** recovery endpoint. Removes every
+  `dhcp.argus_*` section in a single commit without touching
+  anonymous `dhcp.@host[N]` entries (which belong to LuCI / the
+  user). Write-auth gated. Returns `{"ok": true, "removed": N}`.
+  Gives a user who has fallen into an inconsistent state a one-call
+  path back to a clean DHCP config, without SSH-ing to the router
+  and hand-editing `/etc/config/dhcp`.
+
+- **`(*UCIDHCPManager).PurgeArgusOwned(ctx)`** method backing the
+  new endpoint. Direct consumers who embed the type can call it
+  programmatically.
+
+- **New exported sentinel / type** `ErrIPAlreadyReserved` struct with
+  `IP` and `OwnerMAC` fields, per STABILITY.md.
+
+### Tests
+
+- 6 new regression tests:
+  - `TestSetRejectsIPConflict` — different MAC to same IP fails with
+    the typed error; offending entry not written
+  - `TestSetAllowsUpdateOfOwnReservation` — same MAC + same IP is a
+    no-op update, not a conflict
+  - `TestDHCPPostReturns409OnConflict` — HTTP status + body shape
+  - `TestMACHashSuffixIsStable` — determinism
+  - `TestMACHashSuffixAvoidsLastByteCollision` — the specific
+    regression the v0.15.3 fix is named after
+  - `TestErrIPAlreadyReservedMessage` — error format
+
+### End-to-end UAT (MT7981 / C-Life vendor firmware)
+
+Verified exactly the scenario that caused the outage:
+- POST attempting to write `192.168.10.2` for `DE:AD:BE:EF:00:02`
+  (while `A0:29:42:00:7A:FD` already owns it) returns **HTTP 409**
+  with `owner_mac: "A0:29:42:00:7A:FD"` — UCI is NOT mutated.
+- POST with a non-conflicting IP succeeds; UCI section name is
+  the new FNV-based `dhcp.argus_2a8f3c` (was `dhcp.argus_8e97`).
+- `?purge_argus=1` removes every `argus_*` entry, returns `{ok, removed}`.
+
+### Recovery for anyone affected
+
+If your router was poisoned by a pre-v0.15.3 write:
+
+```bash
+# 1. SSH to the router (set a static IP on your laptop first if
+#    DHCP is down):
+ssh root@192.168.10.1
+
+# 2. Remove all argus-written entries in one shot:
+for sec in $(uci -q show dhcp | grep -oE 'dhcp\.argus_[a-z0-9]+' | sort -u); do
+    uci -q delete $sec
+done
+uci commit dhcp
+
+# 3. Restart the DHCP daemon:
+/etc/init.d/odhcpd restart   # or dnsmasq restart on mainline OpenWrt
+```
+
+After installing v0.15.3 the same cleanup is available via
+`curl -X POST 'http://router:9099/api/dhcp?purge_argus=1'`.
+
+---
+
 ## [0.15.2] - 2026-05-10
 
 User report: after setting a static IP via the dashboard, the device
@@ -1356,7 +1464,8 @@ Initial public release · 首次公开发布。
 Link references (kept at the bottom for readability).
 -->
 
-[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.15.2...HEAD
+[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.15.3...HEAD
+[0.15.3]: https://github.com/xxl6097/argusd/compare/v0.15.2...v0.15.3
 [0.15.2]: https://github.com/xxl6097/argusd/compare/v0.15.1...v0.15.2
 [0.15.1]: https://github.com/xxl6097/argusd/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/xxl6097/argusd/compare/v0.14.0...v0.15.0

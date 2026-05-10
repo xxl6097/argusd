@@ -74,6 +74,8 @@ Types and functions used by **library consumers** — these must be preserved ac
   - `(*Server).ServeHTTP` / `OnEvent(Event)` / `Shutdown(ctx)`
   - `argusweb.NewAliasStore(path string) *AliasStore` + `(*AliasStore).Lookup / Set / All` (since v0.14.0); file-backed, case-insensitive MAC keys, atomic writes
   - `argusweb.DHCPManager` interface + `StaticLease` struct (since v0.15.0); `argusweb.NewUCIDHCPManager()` returns an OpenWrt-specific implementation or `ErrDHCPManagerUnavailable` on non-OpenWrt hosts
+  - `argusweb.ErrIPAlreadyReserved` error type (since v0.15.3) — returned by `DHCPManager.Set` when the target IP is bound to a different MAC; fields `{IP, OwnerMAC}` are part of the Stable surface
+  - `(*UCIDHCPManager).PurgeArgusOwned(ctx) (int, error)` (since v0.15.3) — bulk-removes every `dhcp.argus_*` section without touching anonymous `@host[N]` entries
   - HTTP surface: `GET /` (dashboard HTML), `GET /api/devices`
     (JSON snapshot keyed by stable JSON field names), `GET /api/events`
     (Server-Sent Events stream of Online/Offline/Change; event name
@@ -94,8 +96,10 @@ Types and functions used by **library consumers** — these must be preserved ac
     - `503` when the server was built without `WithAliases`
   - `/api/dhcp` (stable wire shape since v0.15.0):
     - `GET` returns `{"leases": {MAC(upper): {mac, ip, name}, ...}}`
-    - `POST {"mac": "...", "ip": "...", "name": "..."}` creates or updates a static reservation. Name optional (auto-generated "argus-<mac-suffix>" when omitted). 400 on invalid MAC/IP/name.
+    - `POST {"mac": "...", "ip": "...", "name": "..."}` creates or updates a static reservation. Name optional (auto-generated "argus-<fnv-suffix>" when omitted). 400 on invalid MAC/IP/name.
+    - **`409` when the target IP is already reserved for a different MAC** (since v0.15.3); body `{"error", "ip", "owner_mac"}` identifies the existing owner.
     - `DELETE ?mac=...` removes a reservation
+    - **`POST ?purge_argus=1` removes every `dhcp.argus_*` section** (since v0.15.3), returns `{"ok": true, "removed": N}`. Recovery tool for a poisoned DHCP config.
     - `503` when the server was built without `WithDHCPManager`
   - Zero third-party deps; single embedded HTML file with vanilla JS
 

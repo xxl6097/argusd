@@ -487,14 +487,23 @@
           body: JSON.stringify(body),
         });
         const b = await r.json().catch(() => ({}));
+        if (r.status === 409 && b.owner_mac) {
+          // IP is already reserved for a different MAC. Show a precise
+          // message naming the existing owner so the user can either
+          // pick another IP or go release the existing reservation.
+          alert(
+            "IP 冲突: " + b.ip + " 已被另一台设备使用\n" +
+            "占用者 MAC: " + b.owner_mac + "\n\n" +
+            "请换一个 IP,或先移除该设备的静态分配。"
+          );
+          return;
+        }
         if (!r.ok) {
           alert("操作失败: " + (b.error || r.status));
           return;
         }
         close();
         reloadDevices();
-        // Give the user feedback about whether the change took effect
-        // immediately, or whether their device needs to renew first.
         showApplyToast(b.apply || {}, "保存成功");
       } catch (e) {
         alert("网络错误: " + e.message);
