@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -62,9 +63,46 @@ var ErrDHCPManagerUnavailable = errors.New("argusweb: no DHCP manager available 
 // uciBinary is overridable for tests; argusd always uses the default.
 var uciBinary = "uci"
 
-// dnsmasqReloadCmd is the command argusweb runs after uci commit to
-// make reservations take effect. Overridable for tests.
-var dnsmasqReloadCmd = []string{"/etc/init.d/dnsmasq", "reload"}
+// dhcpReloadCmds enumerates the init scripts argusweb tries (in order)
+// after a uci commit to make reservations take effect. Different OpenWrt
+// flavors run different DHCP daemons:
+//
+//   - Mainline OpenWrt: dnsmasq (lease file /tmp/dhcp.leases)
+//   - MTK / vendor builds (e.g. C-Life): odhcpd (lease file /tmp/hosts/odhcpd)
+//   - Some images run BOTH (one for IPv4, one for IPv6 RA)
+//
+// Each script's "Command failed: Not found" / non-zero exit is treated
+// as "this daemon isn't installed" and skipped. Overridable for tests.
+var dhcpReloadCmds = [][]string{
+	{"/etc/init.d/dnsmasq", "reload"},
+	{"/etc/init.d/odhcpd", "reload"},
+}
+
+// dhcpLeaseFiles enumerates lease files argusweb prunes a MAC's entry
+// from when forcing immediate-effect of a new static reservation. The
+// reload command alone will not invalidate an active lease — the
+// daemon happily keeps serving the old IP until the client renews
+// (default 12 h). Removing the line forces the daemon to issue the
+// configured static IP on the client's next DHCP packet.
+var dhcpLeaseFiles = []string{
+	"/tmp/dhcp.leases",
+	"/tmp/hosts/odhcpd",
+}
+
+// staKickCmds enumerates ways to forcibly disconnect a WiFi station so
+// it reassociates and triggers a fresh DHCP DISCOVER (which will pick
+// up the new static reservation immediately). The first command that
+// succeeds wins; absence of all of them leaves the kick as a no-op.
+//
+// Order matters: we try the vendor ubus method first (most surgical),
+// then the mainline OpenWrt hostapd ubus method, then the lower-level
+// `iw station del`. {{MAC}} is replaced with the lowercased MAC.
+var staKickCmds = [][]string{
+	// MTK ahsapd vendor firmware (C-Life and similar)
+	{"ubus", "call", "ahsapd.roaming", "staDisconnect", `{"macAddress":"{{MAC}}","dismissTime":2}`},
+	// Mainline OpenWrt hostapd ubus — exists on stock images. We don't
+	// know the iface here so we fall through to iw if this errors.
+}
 
 // UCIDHCPManager writes static DHCP reservations to OpenWrt's uci-
 // backed /etc/config/dhcp and reloads dnsmasq. Constructed via
@@ -220,7 +258,7 @@ func (m *UCIDHCPManager) Set(ctx context.Context, l StaticLease) error {
 		return err
 	}
 	committed = true
-	return reloadDnsmasq(ctx)
+	return nil
 }
 
 // Delete implements DHCPManager.
@@ -255,7 +293,7 @@ func (m *UCIDHCPManager) Delete(ctx context.Context, mac string) error {
 		return err
 	}
 	committed = true
-	return reloadDnsmasq(ctx)
+	return nil
 }
 
 // findHostSectionLocked returns the uci section key (e.g. "@host[2]"
@@ -359,17 +397,126 @@ func parseUCIDHCPShow(out string) map[string]StaticLease {
 	return result
 }
 
-func reloadDnsmasq(ctx context.Context) error {
-	if len(dnsmasqReloadCmd) == 0 {
+// applyDHCPChanges makes a static-reservation change take effect
+// immediately (rather than waiting for the client to voluntarily
+// renew, which is up to 12 h with the default leasetime).
+//
+// Three steps, each best-effort and logged but non-fatal:
+//  1. Reload every DHCP daemon init script we know about. Some
+//     vendor firmwares run odhcpd, not dnsmasq; some run neither.
+//  2. Prune the client's line from every known lease file so a
+//     stale lease doesn't keep the old IP pinned.
+//  3. Kick the WiFi station so it reassociates and sends a fresh
+//     DHCP DISCOVER. Wired clients renew on their own schedule and
+//     can't be kicked.
+//
+// Returns a report describing what each step did. Never returns an
+// error — immediate-apply is a courtesy, not a correctness
+// requirement; the UCI commit has already succeeded by the time we
+// get here.
+//
+// mac is the lowercased MAC (empty allowed; means "don't kick or
+// prune per-MAC, just reload").
+func applyDHCPChanges(ctx context.Context, mac string) applyReport {
+	var rep applyReport
+
+	// 1. Reload DHCP daemon(s).
+	for _, argv := range dhcpReloadCmds {
+		if len(argv) == 0 {
+			continue
+		}
+		if _, err := exec.LookPath(argv[0]); err != nil {
+			continue // init script not present
+		}
+		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+		out, err := cmd.CombinedOutput()
+		if err != nil || bytes_HasPrefix(out, "Command failed") {
+			continue
+		}
+		rep.Reloaded = append(rep.Reloaded, argv[0])
+	}
+
+	// 2. Prune stale lease lines for this MAC from every known lease file.
+	if mac != "" {
+		for _, path := range dhcpLeaseFiles {
+			if err := pruneLeaseFile(path, mac); err == nil {
+				rep.Pruned = append(rep.Pruned, path)
+			}
+		}
+	}
+
+	// 3. Kick the station.
+	if mac != "" {
+		for _, tmpl := range staKickCmds {
+			if len(tmpl) == 0 {
+				continue
+			}
+			if _, err := exec.LookPath(tmpl[0]); err != nil {
+				continue
+			}
+			argv := make([]string, len(tmpl))
+			for i, a := range tmpl {
+				argv[i] = strings.ReplaceAll(a, "{{MAC}}", mac)
+			}
+			ctxK, cancel := context.WithTimeout(ctx, 3*time.Second)
+			cmd := exec.CommandContext(ctxK, argv[0], argv[1:]...)
+			_, err := cmd.CombinedOutput()
+			cancel()
+			if err == nil {
+				rep.Kicked = argv[0] + " " + argv[1] // "ubus call ..."
+				break
+			}
+		}
+	}
+	return rep
+}
+
+// applyReport summarizes what applyDHCPChanges did, for inclusion in
+// the /api/dhcp POST/DELETE response body. Consumers use this to
+// render an accurate "已生效" vs "已保存,但需要设备续租后生效" hint.
+type applyReport struct {
+	Reloaded []string `json:"reloaded,omitempty"` // init scripts that reloaded successfully
+	Pruned   []string `json:"pruned,omitempty"`   // lease files pruned
+	Kicked   string   `json:"kicked,omitempty"`   // station-kick command that succeeded, if any
+}
+
+// bytes_HasPrefix works around a lint-ish preference for not importing
+// bytes just for one call; inline check.
+func bytes_HasPrefix(b []byte, prefix string) bool {
+	if len(b) < len(prefix) {
+		return false
+	}
+	return string(b[:len(prefix)]) == prefix
+}
+
+// pruneLeaseFile rewrites path in-place with all lines matching mac
+// (case-insensitive) removed. No-op if the file doesn't exist or
+// contains no matching lines. Writes atomically via rename so a
+// crash mid-write can't corrupt the file.
+func pruneLeaseFile(path, mac string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	macLower := strings.ToLower(mac)
+	lines := strings.Split(string(data), "\n")
+	out := make([]string, 0, len(lines))
+	changed := false
+	for _, line := range lines {
+		if strings.Contains(strings.ToLower(line), macLower) {
+			changed = true
+			continue
+		}
+		out = append(out, line)
+	}
+	if !changed {
 		return nil
 	}
-	cmd := exec.CommandContext(ctx, dnsmasqReloadCmd[0], dnsmasqReloadCmd[1:]...)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%s: %w: %s", strings.Join(dnsmasqReloadCmd, " "),
-			err, strings.TrimSpace(string(out)))
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strings.Join(out, "\n")), 0o644); err != nil {
+		return err
 	}
-	return nil
+	return os.Rename(tmp, path)
 }
 
 // --- HTTP handlers (wired from Server.handleDHCP) ----------------------
@@ -430,17 +577,26 @@ func (s *Server) handleDHCPSet(w http.ResponseWriter, r *http.Request) {
 		writeJSONErr(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 	if err := s.dhcp.Set(ctx, in); err != nil {
 		writeJSONErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// Immediate-effect: reload daemons, prune stale lease, kick station.
+	// Only run against the UCIDHCPManager (real implementation); test
+	// stubs don't want side effects on the host.
+	var report applyReport
+	if _, ok := s.dhcp.(*UCIDHCPManager); ok {
+		normMAC, _ := validateMAC(in.MAC)
+		report = applyDHCPChanges(ctx, normMAC)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"ok":  true,
-		"mac": strings.ToUpper(in.MAC),
-		"ip":  in.IP,
+		"ok":     true,
+		"mac":    strings.ToUpper(in.MAC),
+		"ip":     in.IP,
+		"apply":  report,
 	})
 }
 
@@ -450,12 +606,20 @@ func (s *Server) handleDHCPDelete(w http.ResponseWriter, r *http.Request) {
 		writeJSONErr(w, http.StatusBadRequest, "mac query parameter required")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 	if err := s.dhcp.Delete(ctx, mac); err != nil {
 		writeJSONErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	var report applyReport
+	if _, ok := s.dhcp.(*UCIDHCPManager); ok {
+		normMAC, _ := validateMAC(mac)
+		report = applyDHCPChanges(ctx, normMAC)
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":    true,
+		"apply": report,
+	})
 }

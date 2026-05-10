@@ -17,6 +17,101 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.15.2] - 2026-05-10
+
+User report: after setting a static IP via the dashboard, the device
+kept using its old dynamically-assigned IP for up to 12 hours (the
+default DHCP lease time).
+
+Root cause: v0.15.0's post-commit hook was hardcoded to
+`/etc/init.d/dnsmasq reload`, which (a) silently no-ops on vendor
+firmwares like MTK C-Life that run **odhcpd instead of dnsmasq**,
+and (b) on dnsmasq hosts only re-reads config, it does NOT
+invalidate existing leases in `/tmp/dhcp.leases`. The reservation
+only took effect on the client's next voluntary DHCP renewal.
+
+This release replaces the single reload call with a three-step
+"immediate-apply" flow and surfaces what actually happened in the
+API response + dashboard toast.
+
+### Changed · 变更
+
+- **`argusweb.UCIDHCPManager` POST/DELETE now performs three
+  best-effort steps** after the `uci commit`:
+
+  1. **Reload all known DHCP daemons**. Tries `/etc/init.d/dnsmasq
+     reload` and `/etc/init.d/odhcpd reload` in order; skips
+     whichever isn't installed (previously only the first was tried).
+  2. **Prune the client's lease line** from every known lease file
+     (`/tmp/dhcp.leases`, `/tmp/hosts/odhcpd`). Without this, the
+     daemon keeps handing out the OLD IP until the client's lease
+     expires naturally.
+  3. **Kick the WiFi station** via a vendor-specific ubus call
+     (`ahsapd.roaming staDisconnect` for MTK C-Life firmware),
+     forcing the client to reassociate and send a fresh DHCP
+     DISCOVER. Wired clients and devices on firmware without
+     staDisconnect keep their old IP until they renew on their own
+     schedule (still the old default behavior).
+
+  All three steps are best-effort: any failure is silently
+  skipped, and the POST continues to return 200 (the UCI commit
+  has already persisted the reservation; immediate-apply is a
+  courtesy, not a correctness requirement).
+
+- **`/api/dhcp` response gains an `apply` block**. Both POST and
+  DELETE now include:
+  ```json
+  "apply": {
+      "reloaded": ["/etc/init.d/odhcpd"],
+      "pruned":   ["/tmp/dhcp.leases"],
+      "kicked":   "ubus call"
+  }
+  ```
+  Fields are omitted when empty. Consumers (including the dashboard)
+  can show a precise "已生效" vs "等待设备续租" hint instead of
+  guessing. Additive; existing `ok`/`mac`/`ip` fields unchanged.
+
+- **Dashboard toast** — after saving or removing a static IP, a
+  5-second bottom-anchored toast summarizes what the server did:
+  - "已重载: /etc/init.d/odhcpd"
+  - "已清除旧租约 (1 个)"
+  - "已踢出该设备,正在重连并重新申请 IP"
+  - 或提示 "设备需要下次续约后才会拿到新 IP(最长 12 小时)。手动关开 WiFi 可立即生效"
+
+### Added · 新增
+
+- 4 new regression tests covering `pruneLeaseFile`: matching line
+  removal, case-insensitive MAC match, missing-file handling,
+  no-op when no line matches (preserves mtime so flash doesn't
+  churn on routers).
+
+### End-to-end UAT (MT7981 / C-Life vendor firmware)
+
+Verified the exact fix for the reported issue:
+- POST `/api/dhcp` → response shows `reloaded=["/etc/init.d/odhcpd"]`
+  (dnsmasq script returned "Command failed: Not found" and was
+  correctly skipped)
+- `pruned=["/tmp/dhcp.leases"]` even when the file is empty (just
+  a stat pass, no rewrite)
+- `kicked="ubus call"` — `ahsapd.roaming staDisconnect` succeeded
+- DELETE also surfaces the same three-step report
+
+### Caveats
+
+- **Not all firmwares support station kick.** Mainline OpenWrt's
+  `hostapd.<iface>` ubus methods are a different shape and aren't
+  included in v0.15.2's kick list (the device's WiFi driver here
+  doesn't expose nl80211 so `iw station del` wouldn't work
+  either). When the kick fails, the UI hints at "手动关开 WiFi 可立即生效".
+- **Lease pruning requires root write access** to the lease files.
+  When argusd runs unprivileged this step silently skips and the
+  user sees a longer wait.
+- **iOS low-power mode / some IoT devices ignore disconnect events**
+  and cache their lease. In those cases the physical WiFi
+  toggle is the reliable path.
+
+---
+
 ## [0.15.1] - 2026-05-10
 
 Dashboard UX patch: remove the dual-language EN/中文 labels (column
@@ -1261,7 +1356,8 @@ Initial public release · 首次公开发布。
 Link references (kept at the bottom for readability).
 -->
 
-[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.15.1...HEAD
+[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.15.2...HEAD
+[0.15.2]: https://github.com/xxl6097/argusd/compare/v0.15.1...v0.15.2
 [0.15.1]: https://github.com/xxl6097/argusd/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/xxl6097/argusd/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/xxl6097/argusd/compare/v0.13.3...v0.14.0

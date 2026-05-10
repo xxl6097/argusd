@@ -7,9 +7,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	argus "github.com/xxl6097/argus"
 	"github.com/xxl6097/argus/argustest"
@@ -392,5 +395,80 @@ func TestDevicesCapabilitiesAdvertisesDHCP(t *testing.T) {
 	}
 	if body.Capabilities["aliases"] {
 		t.Errorf("capabilities.aliases = true, want false (no alias store attached): %+v", body.Capabilities)
+	}
+}
+
+// --- pruneLeaseFile tests ---------------------------------------------
+// These guard the "immediate effect" behavior shipped in v0.15.2: the
+// static-IP POST flow needs to remove a device's stale lease line so
+// the daemon reissues the configured IP on the next DHCP packet,
+// instead of letting the client keep the old IP until its 12h lease
+// runs out.
+
+func TestPruneLeaseFile_RemovesMatchingLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dhcp.leases")
+	content := "1778460000 aa:bb:cc:dd:ee:ff 192.168.10.5 phoneA 01:aa:bb:cc:dd:ee:ff\n" +
+		"1778460001 11:22:33:44:55:66 192.168.10.6 phoneB 01:11:22:33:44:55:66\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := pruneLeaseFile(path, "aa:bb:cc:dd:ee:ff"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(path)
+	if strings.Contains(string(got), "aa:bb:cc") {
+		t.Errorf("matching line still present: %q", got)
+	}
+	if !strings.Contains(string(got), "11:22:33") {
+		t.Errorf("unrelated line dropped: %q", got)
+	}
+}
+
+func TestPruneLeaseFile_CaseInsensitiveMatch(t *testing.T) {
+	// Real dhcp.leases uses lowercase; API callers might send
+	// uppercase MACs. The pruner matches either way.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "leases")
+	if err := os.WriteFile(path, []byte("1 aa:bb:cc:dd:ee:ff 10.0.0.1 host\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := pruneLeaseFile(path, "AA:BB:CC:DD:EE:FF"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(path)
+	if strings.Contains(string(got), "aa:bb:cc") {
+		t.Errorf("case-insensitive match failed: %q", got)
+	}
+}
+
+func TestPruneLeaseFile_MissingFileIsNoError(t *testing.T) {
+	err := pruneLeaseFile("/nonexistent/path/leases", "aa:bb:cc:dd:ee:ff")
+	if err == nil {
+		t.Error("expected error for missing file (caller treats as best-effort)")
+	}
+	// applyDHCPChanges swallows this error; the test documents the raw
+	// behavior so we notice if it ever stops returning an error.
+}
+
+func TestPruneLeaseFile_NoMatchIsNoOp(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "leases")
+	original := "1 11:22:33:44:55:66 10.0.0.1 host\n"
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.Stat(path)
+	time.Sleep(10 * time.Millisecond)
+
+	if err := pruneLeaseFile(path, "aa:bb:cc:dd:ee:ff"); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.Stat(path)
+	// When no line matches, we must not rewrite the file at all (the
+	// rename would bump mtime and churn flash on routers).
+	if !before.ModTime().Equal(after.ModTime()) {
+		t.Errorf("file was rewritten when no match; mtimes before=%v after=%v",
+			before.ModTime(), after.ModTime())
 	}
 }

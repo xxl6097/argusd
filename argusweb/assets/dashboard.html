@@ -212,6 +212,19 @@
   .modal-actions .btn-danger   { color: var(--offline); border-color: rgba(240,113,120,0.4); }
   .modal-actions .btn-danger:hover { background: rgba(240,113,120,0.1); }
 
+  /* ---------- Toast (post-DHCP feedback) ---------- */
+  .toast {
+    position: fixed; left: 50%; bottom: calc(20px + var(--pad-b));
+    transform: translateX(-50%);
+    background: var(--card); border: 1px solid var(--accent); border-radius: 8px;
+    padding: 12px 18px; max-width: 92vw; width: auto;
+    color: var(--fg); font-size: 13px; line-height: 1.6;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.55);
+    z-index: 10000; opacity: 1; transition: opacity 0.4s ease-out;
+  }
+  .toast b { color: var(--accent); font-weight: 500; }
+  .toast.fade { opacity: 0; }
+
   /* ---------- Mobile breakpoint ---------- */
   @media (max-width: 640px) {
     header { padding: 10px var(--pad-h-r) 10px var(--pad-h); gap: 8px 12px; }
@@ -473,13 +486,16 @@
           method: "POST", headers: {"Content-Type": "application/json"},
           body: JSON.stringify(body),
         });
+        const b = await r.json().catch(() => ({}));
         if (!r.ok) {
-          const b = await r.json().catch(() => ({}));
           alert("操作失败: " + (b.error || r.status));
           return;
         }
         close();
         reloadDevices();
+        // Give the user feedback about whether the change took effect
+        // immediately, or whether their device needs to renew first.
+        showApplyToast(b.apply || {}, "保存成功");
       } catch (e) {
         alert("网络错误: " + e.message);
       }
@@ -487,13 +503,14 @@
     const doDelete = async () => {
       try {
         const r = await fetch("/api/dhcp?mac=" + encodeURIComponent(mac), {method: "DELETE"});
+        const b = await r.json().catch(() => ({}));
         if (!r.ok) {
-          const b = await r.json().catch(() => ({}));
           alert("移除失败: " + (b.error || r.status));
           return;
         }
         close();
         reloadDevices();
+        showApplyToast(b.apply || {}, "已移除");
       } catch (e) {
         alert("网络错误: " + e.message);
       }
@@ -516,6 +533,35 @@
   }
 
   function cssEsc(s) { return String(s).replace(/"/g, '\\"'); }
+
+  // showApplyToast renders a bottom-anchored toast describing what
+  // happened after a DHCP change. The server returns an "apply" object
+  // with three fields: reloaded[] (init scripts that reloaded),
+  // pruned[] (lease files pruned), kicked (non-empty if the station
+  // was disconnected). Surfaces all three so the user knows whether
+  // the device is getting a fresh IP NOW or needs to renew on its own.
+  function showApplyToast(apply, action) {
+    const parts = [];
+    if (apply.reloaded && apply.reloaded.length) {
+      parts.push("已重载: " + apply.reloaded.join(", "));
+    } else {
+      parts.push("未找到 DHCP 守护进程可重载");
+    }
+    if (apply.pruned && apply.pruned.length) {
+      parts.push("已清除旧租约 (" + apply.pruned.length + " 个)");
+    }
+    if (apply.kicked) {
+      parts.push("已踢出该设备,正在重连并重新申请 IP");
+    } else if (apply.reloaded && apply.reloaded.length) {
+      parts.push("设备需要下次续约后才会拿到新 IP(最长 12 小时)。手动关开 WiFi 可立即生效");
+    }
+    const t = document.createElement("div");
+    t.className = "toast";
+    t.innerHTML = '<b>' + esc(action) + '</b><br>' + parts.map(esc).join('<br>');
+    document.body.appendChild(t);
+    setTimeout(() => t.classList.add("fade"), 5500);
+    setTimeout(() => t.remove(), 6000);
+  }
 
   function openRenameForm(hostEl, mac) {
     const original = hostEl.innerHTML;
