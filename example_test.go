@@ -2,6 +2,7 @@ package argus_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -175,4 +176,23 @@ func onEvent(e argus.Event) {
 }
 func onError(err error) {
 	log.Printf("[error] %v", err)
+}
+
+// ExampleConfig_jsonReload shows loading Config from a JSON config file
+// (e.g. /etc/argusd.json). Field names are stable across the v0.x line.
+func ExampleConfig_jsonReload() {
+	jsonBlob := []byte(`{
+        "poll_interval":         2000000000,
+        "offline_misses":        7,
+        "weak_rssi":             -75,
+        "disable_flap_suppression": true
+    }`)
+
+	var cfg argus.Config
+	if err := json.Unmarshal(jsonBlob, &cfg); err != nil {
+		log.Fatal(err)
+	}
+
+	w := argus.New(argus.WithConfig(cfg))
+	_ = w
 }

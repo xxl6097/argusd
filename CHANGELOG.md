@@ -17,6 +17,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.0] - 2026-05-10
+
+Focus on **config ergonomics**: make the library trivial to drop into a
+daemon that reads config from a file and publishes events to Kafka /
+HTTP webhooks. No breaking change.
+
+### Added · 新增
+
+- **`argustest` subpackage** — public test helpers for downstream:
+  - `FixedFetcher{Devices, Err}` — deterministic `Fetcher` with injectable error
+    and call counter
+  - `FakeProber{Reach, AllReachable}` — IP-to-reachability map with concurrent
+    `Set` method
+  Consumers writing unit tests for business logic on top of Argus can
+  `import "github.com/xxl6097/argus/argustest"` instead of forking internal
+  fixtures. (`argustest/argustest.go`)
+
+- **JSON serialization is now part of the Stable public surface** (see
+  [`STABILITY.md`](./STABILITY.md)):
+  - `Event` fields: `time` / `kind` / `device` / `changes`
+  - `Device` fields: `mac` / `ip` / `hostname` / `vendor` / `type` / `radio` /
+    `ssid` / `channel` / `rssi` / `uptime_ns` / `access_time` / `last_seen`
+  - `Change` fields: `field` / `old` / `new`
+  - `Decision` fields: `time` / `kind` / `mac` / `detail`
+  - `Config` fields: snake_case mirrors of the Go field names
+  - `EventKind` / `DecisionKind` marshal to English `String()`
+    (`"ONLINE"` / `"CONNECT_EMIT"` / …), not the underlying integer. The
+    integer values remain `Evolving` per STABILITY.md so renumbering stays
+    safe in future versions.
+  - `EventKind.UnmarshalJSON` accepts both the string form and the legacy
+    integer form for backward compatibility with data serialized by older
+    versions.
+  All fields use `omitempty` so sparse config files / compact events stay
+  small on the wire.
+
+- **`ExampleConfig_jsonReload`** — godoc example showing `/etc/argusd.json`
+  style load via `json.Unmarshal(..., &cfg)` + `argus.WithConfig(cfg)`.
+  (`example_test.go`)
+
+- **`ExampleFixedFetcher`** — godoc example in the `argustest` subpackage.
+  (`argustest/example_test.go`)
+
+- **JSON round-trip tests** — `TestEventJSONRoundTrip`,
+  `TestEventKindUnmarshalFromInt`, `TestChangeJSONFields`,
+  `TestConfigJSONRoundTrip`, `TestDecisionJSONFields`.
+  (`json_test.go`)
+
+### Changed · 变更
+
+- Struct tags added to `Device` / `Event` / `Change` / `Decision` / `Config`.
+  No Go-level breaking change (existing consumers unaffected); new JSON
+  field names are the public contract going forward.
+
+### Documentation
+
+- `STABILITY.md` expanded with an explicit "JSON serialization" section
+  documenting every stable field name and adds `argustest` subpackage to
+  the Stable surface.
+
+---
+
 ## [0.5.0] - 2026-05-09
 
 Lifecycle: add graceful stop and restart on the same `*Watcher`. Closes the
@@ -349,7 +410,8 @@ Initial public release · 首次公开发布。
 Link references (kept at the bottom for readability).
 -->
 
-[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/xxl6097/argusd/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/xxl6097/argusd/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/xxl6097/argusd/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/xxl6097/argusd/compare/v0.2.0...v0.3.0

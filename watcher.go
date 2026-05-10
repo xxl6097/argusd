@@ -11,46 +11,50 @@ import (
 
 // Config 控制 Watcher 的轮询节奏、离线判定阈值、冷却期与弱信号分级。
 // 字段为零值时会在 New 中回退到默认值, 因此最小用法是 New() 不带任何 Option。
+//
+// JSON / TOML / YAML 反序列化支持: 字段带 `json:` 标签, 下游可以直接从
+// 配置文件加载。零值保留默认的约定在反序列化后依然生效 (通过 WithConfig
+// 合并), 所以缺失字段不会把 Config 重置为零。
 type Config struct {
 	// PollInterval 是相邻两次拉取之间的间隔。默认 1s。
-	PollInterval time.Duration
+	PollInterval time.Duration `json:"poll_interval,omitempty"`
 	// OfflineMisses 是设备连续多少次未出现在拉取结果里才判定为离线 (默认路径, 不含 RSSI/ARP 加速)。
 	// 默认 5。
-	OfflineMisses int
+	OfflineMisses int `json:"offline_misses,omitempty"`
 	// FetchTimeout 限制单次拉取调用的耗时。默认 3s。
-	FetchTimeout time.Duration
+	FetchTimeout time.Duration `json:"fetch_timeout,omitempty"`
 
 	// OfflineCooldown 设备刚判离线后的冷却期: 冷却期内重复的 EventOffline 被压制,
 	// 且 RSSI < CooldownReleaseRSSI 的重新接入不触发 EventOnline。
 	//
 	// 只要设备持续处于弱信号状态, 冷却期会被每次轮询刷新, 避免抑制后再次触发重复离线。
 	// 设为 time.Nanosecond 可实际禁用冷却期。默认值见 DefaultConfig。
-	OfflineCooldown time.Duration
+	OfflineCooldown time.Duration `json:"offline_cooldown,omitempty"`
 	// CooldownReleaseRSSI 冷却期内 RSSI 恢复到此值 (含) 之上才允许触发 EventOnline。
 	// RSSI 为负值, 默认 -65 (强信号)。零值 (0 dBm) 无实际意义, 用作"使用默认"的标记。
-	CooldownReleaseRSSI int
+	CooldownReleaseRSSI int `json:"cooldown_release_rssi,omitempty"`
 	// WeakRSSI 信号弱的阈值, 低于此值触发 diff 的加速离线判定。默认 -80。
-	WeakRSSI int
+	WeakRSSI int `json:"weak_rssi,omitempty"`
 	// ExtremelyWeakRSSI 信号极弱的阈值, 触发更激进的 threshold。默认 -88。
-	ExtremelyWeakRSSI int
+	ExtremelyWeakRSSI int `json:"extremely_weak_rssi,omitempty"`
 	// WeakMissThreshold WeakRSSI ~ ExtremelyWeakRSSI 区间内的离线计数阈值。默认 5。
-	WeakMissThreshold int
+	WeakMissThreshold int `json:"weak_miss_threshold,omitempty"`
 	// ExtremelyWeakMissThreshold < ExtremelyWeakRSSI 的离线计数阈值。默认 2。
-	ExtremelyWeakMissThreshold int
+	ExtremelyWeakMissThreshold int `json:"extremely_weak_miss_threshold,omitempty"`
 
 	// FlapSuppressionWindow 抖动抑制窗口: 一台设备在此窗口内不会连续触发两个同类事件
 	// (两次 Online / 两次 Offline)。用于抵消中等信号设备的快闪。默认 30s。
 	// WithConfig 对零值按"保留默认"处理; 若需显式关闭, 请使用 DisableFlapSuppression。
-	FlapSuppressionWindow time.Duration
+	FlapSuppressionWindow time.Duration `json:"flap_suppression_window,omitempty"`
 
 	// DisableCooldown 显式关闭冷却期机制。设置为 true 时, OfflineCooldown 相关的
 	// 所有抑制逻辑 (COOLDOWN_SUPPRESS_ONLINE / COOLDOWN_SUPPRESS_OFFLINE /
 	// COOLDOWN_CLEARED) 都不再触发, 离线事件后重新出现的设备立即触发上线。
 	// 默认 false (启用冷却期)。此字段与 OfflineCooldown 数值不冲突: true 时忽略数值。
-	DisableCooldown bool
+	DisableCooldown bool `json:"disable_cooldown,omitempty"`
 	// DisableFlapSuppression 显式关闭抖动抑制窗口 (与 FlapSuppressionWindow=0 等价,
 	// 但语义更清晰, 不依赖"零值 = 关闭"的约定)。默认 false (启用抑制)。
-	DisableFlapSuppression bool
+	DisableFlapSuppression bool `json:"disable_flap_suppression,omitempty"`
 }
 
 // DefaultConfig 返回库的默认配置:

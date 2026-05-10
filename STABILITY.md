@@ -44,6 +44,20 @@ Types and functions used by **library consumers** — these must be preserved ac
 - `(Device).Row() / .String() / .Wired()`
 - `DetectLocalLocation() *time.Location`
 - `EventKind.String() / .Label()`
+- Subpackage `argustest` — all exported names: `FixedFetcher{Devices, Err}` / `FakeProber{Reach, AllReachable}` and their methods. Intended for consumer unit tests.
+
+### JSON serialization (stable from v0.6.0)
+
+The following JSON field names are part of the Stable public surface — downstream consumers can safely use them as Kafka / webhook / database column names:
+
+- `Event`: `time` / `kind` / `device` / `changes`
+- `EventKind`: marshaled as the English `String()` (`"ONLINE"` / `"OFFLINE"` / `"CHANGE"`). `UnmarshalJSON` also accepts the legacy integer form for backward compatibility.
+- `Device`: `mac` / `ip` / `hostname` / `vendor` / `type` / `radio` / `ssid` / `channel` / `rssi` / `uptime_ns` / `access_time` / `last_seen`
+- `Change`: `field` / `old` / `new`
+- `Decision`: `time` / `kind` / `mac` / `detail`. `DecisionKind` marshals to the English `String()` too.
+- `Config`: `poll_interval` / `offline_misses` / `fetch_timeout` / `offline_cooldown` / `cooldown_release_rssi` / `weak_rssi` / `extremely_weak_rssi` / `weak_miss_threshold` / `extremely_weak_miss_threshold` / `flap_suppression_window` / `disable_cooldown` / `disable_flap_suppression`. Durations in nanoseconds (Go's default). `omitempty` preserved on all fields so sparse config files work.
+
+New fields on `Event` / `Device` / `Decision` / `Config` may be added in future minor releases (with `omitempty` so old consumers don't break). Existing fields will not be renamed or removed in the 0.x line.
 
 ### Behavioral guarantees
 
@@ -58,8 +72,7 @@ Types and functions used by **library consumers** — these must be preserved ac
 
 These are exported but still shape-shifting. Consumers should only depend on them loosely:
 
-- `DecisionKind` const **values** (1, 2, 3, … 42) may be renumbered between 0.x minor releases. The `String()` / `Label()` outputs are the stable identifiers — use those for logging/serialization.
-- `SyslogKind` — same caveat.
+- `DecisionKind` / `SyslogKind` / `EventKind` **integer const values** (1, 2, 3, … 42) may be renumbered between 0.x minor releases. The `String()` / `Label()` / JSON outputs are the stable identifiers — use those for logging/serialization.
 - Internal branch coverage (e.g. adding new `DecisionKind` constants) is a **minor** bump, not breaking.
 - `Fetcher` / `Prober` interface methods are unlikely to change, but concrete struct field additions in `AhsapdFetcher` / `HostapdFetcher` / `ICMPProber` are allowed.
 
@@ -69,7 +82,7 @@ These are exported but still shape-shifting. Consumers should only depend on the
 
 - Any package-unexported identifier (lowercase).
 - Any function in `cmd/argusd` — it's a reference CLI, not part of the library API.
-- Test fixtures (`staticFetcher`, etc.).
+- In-package test fixtures (`staticFetcher`, etc.). Use `argustest` subpackage instead.
 - Decision log string formats.
 
 ---

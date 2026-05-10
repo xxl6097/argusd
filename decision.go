@@ -1,6 +1,7 @@
 package argus
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -142,11 +143,13 @@ func (k DecisionKind) Label() string {
 // Decision 是一次内部决策的观测记录, 通过 DecisionHandler 暴露给上层。
 // 用于日志 / 监控 / 调试; 业务侧通常只关心 Event, 但需要调参或排障时 Decision
 // 提供了完整的判定链路信息。
+//
+// JSON 序列化: Kind 用英文稳定标识 (见 DecisionKind.MarshalJSON)。
 type Decision struct {
-	Time   time.Time
-	Kind   DecisionKind
-	MAC    string
-	Detail string // 可选的人类可读上下文 (如 "RSSI=-75 misses=3/5")
+	Time   time.Time    `json:"time"`
+	Kind   DecisionKind `json:"kind"`
+	MAC    string       `json:"mac"`
+	Detail string       `json:"detail,omitempty"` // 可选的人类可读上下文 (如 "RSSI=-75 misses=3/5")
 }
 
 // String 返回紧凑单行表示, 适合直接写入日志。
@@ -156,6 +159,12 @@ func (d Decision) String() string {
 		return fmt.Sprintf("[%s] [决策] %s %s", ts, d.Kind.Label(), d.MAC)
 	}
 	return fmt.Sprintf("[%s] [决策] %s %s (%s)", ts, d.Kind.Label(), d.MAC, d.Detail)
+}
+
+// MarshalJSON 序列化为 DecisionKind.String() 的英文稳定标识 (如 "CONNECT_EMIT"),
+// 而非整数值。整数值在 STABILITY.md 中被标为 Evolving, 字符串则稳定。
+func (k DecisionKind) MarshalJSON() ([]byte, error) {
+	return json.Marshal(k.String())
 }
 
 // DecisionHandler 接收内部决策观测。可为 nil, 为 nil 时决策不收集, 完全零成本。
