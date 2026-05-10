@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Argus · 设备监控</title>
+<style>
+  :root {
+    --bg: #0e1014; --fg: #e6e6e6; --muted: #8a8f98; --line: #1e2128;
+    --accent: #4ec9b0; --online: #4ec9b0; --offline: #f07178; --change: #e5c07b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+      "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  header {
+    padding: 14px 20px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+  }
+  header h1 { margin: 0; font-size: 18px; font-weight: 500; color: var(--accent); }
+  header .sub { color: var(--muted); font-size: 12px; }
+  header .status { margin-left: auto; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; }
+  .pill.online  { background: rgba(78,201,176,0.15); color: var(--online); }
+  .pill.offline { background: rgba(240,113,120,0.15); color: var(--offline); }
+  .pill.change  { background: rgba(229,192,123,0.15); color: var(--change); }
+  main { padding: 20px; display: grid; grid-template-columns: 1fr 420px; gap: 20px; }
+  @media (max-width: 960px) { main { grid-template-columns: 1fr; } }
+  section { background: #14171d; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  section > h2 {
+    margin: 0; padding: 10px 14px; font-size: 13px; font-weight: 500;
+    color: var(--muted); border-bottom: 1px solid var(--line); display: flex;
+    align-items: center; gap: 8px;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+  td.mac { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  td.rssi-strong  { color: var(--online); }
+  td.rssi-medium  { color: var(--fg); }
+  td.rssi-weak    { color: var(--change); }
+  td.rssi-vweak   { color: var(--offline); }
+  #events-list { max-height: 70vh; overflow-y: auto; padding: 0; margin: 0; list-style: none; }
+  #events-list li { padding: 8px 14px; border-bottom: 1px solid var(--line); font-size: 12px; }
+  #events-list li .ts { color: var(--muted); font-family: ui-monospace, Menlo, monospace; }
+  #events-list li .mac { font-family: ui-monospace, Menlo, monospace; }
+  .empty { padding: 20px; text-align: center; color: var(--muted); font-style: italic; }
+  footer { padding: 10px 20px; color: var(--muted); font-size: 11px; border-top: 1px solid var(--line); }
+  code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 3px; font-size: 11px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Argus</h1>
+  <span class="sub">设备监控 · Device Monitor</span>
+  <span class="status" id="status">
+    <span class="pill" id="conn" style="background: rgba(138,143,152,0.15); color: var(--muted);">连接中…</span>
+    <span class="pill online" id="count">0 台</span>
+  </span>
+</header>
+<main>
+  <section>
+    <h2>已知设备 · Known Devices</h2>
+    <table>
+      <thead><tr>
+        <th>MAC</th><th>IP</th><th>主机名 · Host</th>
+        <th>信号 · RSSI</th><th>类型 · Link</th>
+      </tr></thead>
+      <tbody id="devices-body"></tbody>
+    </table>
+  </section>
+  <section>
+    <h2>实时事件流 · Live Events
+      <span class="sub" style="margin-left:auto;font-size:10px;color:var(--muted);">SSE · /api/events</span>
+    </h2>
+    <ul id="events-list"><li class="empty">等待事件… · waiting for events…</li></ul>
+  </section>
+</main>
+<footer>
+  Argus · 百眼守望者 · local dashboard ·
+  <code>GET /api/devices</code> <code>GET /api/events</code> (SSE)
+</footer>
+<script>
+(function () {
+  "use strict";
+
+  const elBody = document.getElementById("devices-body");
+  const elEvents = document.getElementById("events-list");
+  const elCount = document.getElementById("count");
+  const elConn = document.getElementById("conn");
+
+  const MAX_EVENT_LINES = 200;
+  let eventsStarted = false;
+
+  function rssiClass(r) {
+    if (!r || r === 0) return "";
+    if (r >= -55) return "rssi-strong";
+    if (r >= -70) return "rssi-medium";
+    if (r >= -80) return "rssi-weak";
+    return "rssi-vweak";
+  }
+
+  function esc(s) {
+    if (s == null) return "";
+    return String(s).replace(/[&<>"']/g, c => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    })[c]);
+  }
+
+  function renderDevices(rows) {
+    elBody.innerHTML = "";
+    for (const d of rows) {
+      const tr = document.createElement("tr");
+      const linkText = d.wired
+        ? "有线 wired"
+        : [d.radio, d.ssid && "/" + d.ssid].filter(Boolean).join("");
+      const rssiText = d.rssi ? d.rssi + " dBm" : "—";
+      tr.innerHTML =
+        '<td class="mac">' + esc(d.mac) + '</td>' +
+        '<td>' + esc(d.ip || "—") + '</td>' +
+        '<td>' + esc(d.hostname || "—") + '</td>' +
+        '<td class="' + rssiClass(d.rssi) + '">' + esc(rssiText) + '</td>' +
+        '<td>' + esc(linkText) + '</td>';
+      elBody.appendChild(tr);
+    }
+    elCount.textContent = rows.length + " 台";
+  }
+
+  async function reloadDevices() {
+    try {
+      const r = await fetch("/api/devices", { cache: "no-store" });
+      const body = await r.json();
+      renderDevices(body.devices || []);
+    } catch (err) {
+      console.warn("reload failed", err);
+    }
+  }
+
+  function addEventLine(kind, data) {
+    if (!eventsStarted) {
+      elEvents.innerHTML = "";
+      eventsStarted = true;
+    }
+    const li = document.createElement("li");
+    const ts = new Date(data.time).toLocaleTimeString();
+    const mac = (data.device && data.device.mac) ? data.device.mac.toUpperCase() : "";
+    const pillClass =
+      kind === "ONLINE"  ? "online"  :
+      kind === "OFFLINE" ? "offline" : "change";
+    const label =
+      kind === "ONLINE"  ? "上线 ONLINE"  :
+      kind === "OFFLINE" ? "离线 OFFLINE" : "变更 CHANGE";
+    let detail = "";
+    if (kind === "CHANGE" && data.changes) {
+      detail = data.changes.map(c => c.field + ": " + c.old + "→" + c.new).join(", ");
+    } else if (data.device) {
+      detail = [data.device.ip, data.device.hostname, data.device.ssid]
+        .filter(Boolean).join(" · ");
+    }
+    li.innerHTML =
+      '<span class="ts">' + esc(ts) + '</span> ' +
+      '<span class="pill ' + pillClass + '">' + esc(label) + '</span> ' +
+      '<span class="mac">' + esc(mac) + '</span> ' +
+      '<span>' + esc(detail) + '</span>';
+    elEvents.insertBefore(li, elEvents.firstChild);
+    while (elEvents.children.length > MAX_EVENT_LINES) {
+      elEvents.removeChild(elEvents.lastChild);
+    }
+  }
+
+  function connectSSE() {
+    const es = new EventSource("/api/events");
+    es.addEventListener("hello", () => {
+      elConn.textContent = "已连接 connected";
+      elConn.style.background = "rgba(78,201,176,0.15)";
+      elConn.style.color = "var(--online)";
+    });
+    ["ONLINE", "OFFLINE", "CHANGE"].forEach(kind => {
+      es.addEventListener(kind, ev => {
+        try {
+          const data = JSON.parse(ev.data);
+          addEventLine(kind, data);
+          // Re-sync the devices table on every state change.
+          reloadDevices();
+        } catch (e) { console.warn("parse event failed", e); }
+      });
+    });
+    es.onerror = () => {
+      elConn.textContent = "重连中… reconnecting";
+      elConn.style.background = "rgba(240,113,120,0.15)";
+      elConn.style.color = "var(--offline)";
+      // EventSource auto-reconnects; no explicit retry needed.
+    };
+  }
+
+  // Initial paint + connect.
+  reloadDevices();
+  connectSSE();
+
+  // Periodic re-sync in case we miss an event (slow-subscriber drop).
+  setInterval(reloadDevices, 30000);
+})();
+</script>
+</body>
+</html>

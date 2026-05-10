@@ -64,6 +64,14 @@ Types and functions used by **library consumers** — these must be preserved ac
   - `(*LabeledCounters).LabelNames() []string`
   - `(*LabeledCounters).Reset()`
   - `LabelExtractor func(Decision) []string`
+- Subpackage `argusweb` (stable from v0.13.0) — opt-in HTTP + SSE dashboard:
+  - `argusweb.NewServer(*argus.Watcher) *Server` — builds an `http.Handler`
+  - `(*Server).ServeHTTP` / `OnEvent(Event)` / `Shutdown(ctx)`
+  - HTTP surface: `GET /` (dashboard HTML), `GET /api/devices`
+    (JSON snapshot keyed by stable JSON field names), `GET /api/events`
+    (Server-Sent Events stream of Online/Offline/Change; event name
+    matches `EventKind.String()`)
+  - Zero third-party deps; single embedded HTML file with vanilla JS
 
 ### JSON serialization (stable from v0.6.0)
 

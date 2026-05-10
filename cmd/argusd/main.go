@@ -6,11 +6,15 @@
 // 除 stdout 日志外, 还同步注入:
 //   - argusmetrics.Counters 用于累计决策/事件计数 (SIGUSR1 打印快照到 stderr)
 //   - log/slog 结构化日志 hook (level/msg/attrs)
+//   - 可选的 argusweb 本地仪表板 (-listen=127.0.0.1:9099)
 //
 // 信号:
 //   - SIGINT  / SIGTERM: 优雅退出
 //   - SIGHUP:            停止并重启 Watcher (保留 known / cooldown / 已探测 Fetcher)
 //   - SIGUSR1:           打印一次 argusmetrics 快照到 stderr (不影响正在运行的 Watcher)
+//
+// 标志:
+//   - -listen=addr     启动内置 Web UI / SSE 仪表板 (如 127.0.0.1:9099)
 //
 // 环境变量:
 //   - ARGUSD_DEBUG=1   启用 slog Debug 级别 + 展开决策 trace
@@ -19,9 +23,11 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"sort"
@@ -31,9 +37,13 @@ import (
 
 	owrt "github.com/xxl6097/argus"
 	"github.com/xxl6097/argus/argusmetrics"
+	"github.com/xxl6097/argus/argusweb"
 )
 
 func main() {
+	listen := flag.String("listen", "", "optional Web UI listen address (e.g. 127.0.0.1:9099); empty disables")
+	flag.Parse()
+
 	log.SetFlags(log.LstdFlags)
 	owrt.SetupLocalTimezone()
 
@@ -92,6 +102,27 @@ func main() {
 		}),
 	)
 
+	// Optional built-in Web UI. Launched on a goroutine bound to exitCtx;
+	// graceful shutdown on SIGINT/SIGTERM via httpSrv.Shutdown.
+	var web *argusweb.Server
+	var httpSrv *http.Server
+	if *listen != "" {
+		web = argusweb.NewServer(w)
+		httpSrv = &http.Server{
+			Addr:         *listen,
+			Handler:      web,
+			ReadTimeout:  10 * time.Second,
+			WriteTimeout: 0, // SSE streams are long-lived; 0 = no write timeout
+			IdleTimeout:  120 * time.Second,
+		}
+		go func() {
+			log.Printf("Web UI 监听 %s (GET / 面板, /api/devices 快照, /api/events SSE)", *listen)
+			if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("Web UI 启动失败: %v", err)
+			}
+		}()
+	}
+
 	devices, err := w.List(exitCtx)
 	if err != nil {
 		log.Fatalf("初始拉取失败: %v", err)
@@ -114,6 +145,9 @@ func main() {
 		go func() {
 			runDone <- w.Run(runCtx, func(e owrt.Event) {
 				metrics.OnEvent(e)
+				if web != nil {
+					web.OnEvent(e)
+				}
 				onEvent(e)
 			}, onError)
 		}()
@@ -121,6 +155,7 @@ func main() {
 		select {
 		case err := <-runDone:
 			cancelRun()
+			shutdownWeb(httpSrv, web)
 			if err != nil && !errors.Is(err, context.Canceled) {
 				log.Fatalf("监听异常退出: %v", err)
 			}
@@ -135,6 +170,7 @@ func main() {
 			stopCancel()
 			cancelRun()
 			<-runDone
+			shutdownWeb(httpSrv, web)
 			printMetricsSnapshot(metrics)
 			log.Println("收到退出信号, 程序结束")
 			return
@@ -154,6 +190,20 @@ func main() {
 			generation++
 			// 继续 for 循环, 开始下一轮 Run
 		}
+	}
+}
+
+// shutdownWeb drains SSE subscribers and gives the HTTP server 3 s to
+// finish in-flight requests. No-op when the Web UI wasn't enabled.
+func shutdownWeb(httpSrv *http.Server, web *argusweb.Server) {
+	if httpSrv == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_ = httpSrv.Shutdown(ctx)
+	if web != nil {
+		web.Shutdown(ctx)
 	}
 }
 

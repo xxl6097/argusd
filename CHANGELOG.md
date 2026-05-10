@@ -17,6 +17,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.13.0] - 2026-05-10
+
+Focus on **built-in dashboard**: a zero-dependency, single-file HTTP +
+Server-Sent Events UI embedded in the binary. Opt-in via a new
+`-listen` flag in `argusd`; the core library is unchanged (the
+dashboard ships in a separate `argusweb` subpackage so consumers who
+don't want `net/http` in their binary can skip it).
+
+No breaking change.
+
+### Added · 新增
+
+- **`argusweb` subpackage** — HTTP + SSE dashboard:
+  - `argusweb.NewServer(*argus.Watcher) *Server` — constructs an
+    `http.Handler` with three routes
+  - `(*Server).OnEvent(Event)` — fan-out entry; wire it alongside
+    your `EventHandler` so incoming events stream to connected
+    dashboard clients
+  - `(*Server).Shutdown(ctx)` — drains SSE subscribers
+  - HTTP surface:
+    - `GET /` — single embedded HTML page with vanilla JS +
+      EventSource (no CDN, no framework, no build step)
+    - `GET /api/devices` — JSON snapshot of the current `Known()`
+      set, keyed by the stable JSON field names from STABILITY.md
+    - `GET /api/events` — Server-Sent Events stream; event names
+      match `EventKind.String()` (`ONLINE` / `OFFLINE` / `CHANGE`);
+      `data:` payload is the same JSON shape as
+      `json.Marshal(argus.Event{})`
+  - **Slow-subscriber safety**: each SSE connection has an 8-slot
+    buffered channel; `OnEvent` drops events for subscribers whose
+    buffers are full, so a stuck client never pins memory or blocks
+    other subscribers
+  - **Dashboard UX**: dark theme, bilingual labels (EN/中文), live
+    RSSI-tiered color coding, 30 s periodic re-sync in case an
+    event was dropped, auto-reconnect on transient disconnects
+  - Zero third-party dependencies (`net/http` + `embed` from stdlib)
+  - 6 unit tests: index HTML, 404, devices JSON, SSE hello frame,
+    SSE event delivery, slow-subscriber drop, Shutdown cleanup
+
+- **`argusd -listen=<addr>` flag** — opt-in Web UI:
+  ```bash
+  /tmp/argusd -listen=127.0.0.1:9099
+  # then: curl -N http://127.0.0.1:9099/api/events
+  # or open http://127.0.0.1:9099/ in a browser
+  ```
+  Unset (default) = no HTTP server, zero overhead. Bind to
+  `127.0.0.1` for local-only access; put a reverse proxy in front
+  for auth + TLS if you want remote access. Graceful shutdown
+  wired into both SIGINT/SIGTERM and the Run-exit path. HTTP write
+  timeout is disabled (SSE streams are long-lived) but read
+  timeout stays at 10 s for request headers.
+
+### Fixed · 修复
+
+- **`argusd` SIGUSR1 control-flow bug** (discovered during the
+  v0.12.0 soak): the SIGUSR1 handler lived in the main `for-select`
+  next to the Run lifecycle branches. After printing the metrics
+  snapshot, the outer loop iterated and started a second `Run()`,
+  which immediately returned `ErrAlreadyRunning` and killed the
+  daemon via `log.Fatalf`. Moved the handler to a dedicated
+  goroutine bound to `exitCtx`. SIGHUP (which genuinely intends
+  to restart Run) stays in the main loop. (`cmd/argusd/main.go`)
+
+### Documentation
+
+- `STABILITY.md` Stable surface extended with `argusweb.Server` +
+  its method set.
+- `SOAK_v0.12.0.md` — 5-minute router soak report covering the
+  SIGUSR1 bug, the fix, and the clean re-run.
+
+---
+
 ## [0.12.0] - 2026-05-10
 
 Focus on **tracing + fuzz hardening**: opt-in distributed-tracing hook
@@ -809,7 +881,8 @@ Initial public release · 首次公开发布。
 Link references (kept at the bottom for readability).
 -->
 
-[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/xxl6097/argusd/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/xxl6097/argusd/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/xxl6097/argusd/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/xxl6097/argusd/compare/v0.9.0...v0.10.0

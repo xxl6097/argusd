@@ -359,8 +359,8 @@ Sample decision trace · 决策跟踪示例:
       **中文** 分布式追踪钩子 `SpanRecorder`(v0.12.0)
 - [x] **EN** Fuzz targets for syslog / DHCP lease parsers (v0.12.0)
       **中文** Syslog / DHCP 租约解析器 fuzz 目标(v0.12.0)
+- [x] **EN** Built-in Web UI (HTTP + SSE, v0.13.0) · **中文** 内置 Web UI(HTTP + SSE, v0.13.0)
 - [ ] **EN** Direct `ubus` socket integration (skip CLI) · **中文** 直连 `ubus` socket,跳过 CLI
-- [ ] **EN** Built-in Web UI (HTTP + SSE) · **中文** 内置 Web UI(HTTP + SSE)
 - [ ] **EN** IPv6-only device support · **中文** 仅 IPv6 设备支持
 - [ ] **EN** Home Assistant `device_tracker` bridge · **中文** Home Assistant 桥接
 
