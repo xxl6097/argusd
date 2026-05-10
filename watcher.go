@@ -40,8 +40,17 @@ type Config struct {
 
 	// FlapSuppressionWindow 抖动抑制窗口: 一台设备在此窗口内不会连续触发两个同类事件
 	// (两次 Online / 两次 Offline)。用于抵消中等信号设备的快闪。默认 30s。
-	// 设为 0 可关闭此功能 (恢复到只依赖 RSSI 分级冷却)。
+	// WithConfig 对零值按"保留默认"处理; 若需显式关闭, 请使用 DisableFlapSuppression。
 	FlapSuppressionWindow time.Duration
+
+	// DisableCooldown 显式关闭冷却期机制。设置为 true 时, OfflineCooldown 相关的
+	// 所有抑制逻辑 (COOLDOWN_SUPPRESS_ONLINE / COOLDOWN_SUPPRESS_OFFLINE /
+	// COOLDOWN_CLEARED) 都不再触发, 离线事件后重新出现的设备立即触发上线。
+	// 默认 false (启用冷却期)。此字段与 OfflineCooldown 数值不冲突: true 时忽略数值。
+	DisableCooldown bool
+	// DisableFlapSuppression 显式关闭抖动抑制窗口 (与 FlapSuppressionWindow=0 等价,
+	// 但语义更清晰, 不依赖"零值 = 关闭"的约定)。默认 false (启用抑制)。
+	DisableFlapSuppression bool
 }
 
 // DefaultConfig 返回库的默认配置:
@@ -118,7 +127,8 @@ type ErrorHandler func(error)
 type Option func(*Watcher)
 
 // WithConfig 设置自定义轮询配置。零值字段会保留默认值 (Config 字段的零值 0 通常不合法,
-// 安全地作为"使用默认"的哨兵)。如需禁用冷却期, 传入一个极小值 (如 time.Nanosecond)。
+// 安全地作为"使用默认"的哨兵)。如需显式关闭冷却期或抖动抑制, 请使用
+// Config.DisableCooldown / DisableFlapSuppression 而非 OfflineCooldown=0。
 func WithConfig(c Config) Option {
 	return func(w *Watcher) {
 		if c.PollInterval > 0 {
@@ -151,6 +161,13 @@ func WithConfig(c Config) Option {
 		if c.FlapSuppressionWindow > 0 {
 			w.cfg.FlapSuppressionWindow = c.FlapSuppressionWindow
 		}
+		// Disable* 字段: 零值 (false) 即不修改, 用户传 true 时才覆盖。
+		if c.DisableCooldown {
+			w.cfg.DisableCooldown = true
+		}
+		if c.DisableFlapSuppression {
+			w.cfg.DisableFlapSuppression = true
+		}
 	}
 }
 
@@ -180,6 +197,22 @@ func OnFetcherDetected(cb func(FetcherKind)) Option {
 // 回调内不应阻塞, 决策产生频率较高。传 nil (或不调用本 Option) 完全不收集决策。
 func WithDecisionHandler(cb DecisionHandler) Option {
 	return func(w *Watcher) { w.onDecision = cb }
+}
+
+// WithBaseline 以 baseline 为已知设备基线初始化 Watcher。Watcher 在启动时会跳过
+// 对这些 MAC 的"新上线"识别 (不触发 EventOnline), 直接视为历史已知。
+//
+// 典型场景: 进程重启 / 热重载时, 把旧 Watcher 的 Known() 快照传给新 Watcher,
+// 避免重启瞬间所有设备被识别为"新上线"导致业务事件风暴。
+//
+// 注意: baseline 是浅拷贝; 传入后请勿再并发修改这份 map。
+// 不会触发 EnsureFetcher, 传入的设备字段由调用方保证正确。
+func WithBaseline(baseline map[string]Device) Option {
+	return func(w *Watcher) {
+		for mac, d := range baseline {
+			w.known[mac] = d
+		}
+	}
 }
 
 // Watcher 是库的主入口, 管理一份"已知设备"的状态, 通过周期拉取识别变化。
@@ -263,7 +296,7 @@ type lastEvent struct {
 // Offline→Offline) 会被压制。相反类型的事件 (Online→Offline 或反过来) 不压制。
 // 注意: 调用方应持 stateMu。
 func (w *Watcher) shouldSuppressFlap(mac string, kind EventKind, now time.Time) bool {
-	if w.cfg.FlapSuppressionWindow <= 0 {
+	if w.cfg.DisableFlapSuppression || w.cfg.FlapSuppressionWindow <= 0 {
 		return false
 	}
 	last, ok := w.lastEventAt[mac]
@@ -307,6 +340,21 @@ func New(opts ...Option) *Watcher {
 // 用户显式 WithFetcher 注入时返回空串。
 func (w *Watcher) FetcherKind() FetcherKind { return w.detectKind }
 
+// Known 返回当前库认为"在线"的设备集的深拷贝快照, 按小写 MAC 索引。
+// 并发安全, 可随时调用。
+//
+// 典型用途: 进程热重载时, 把快照传给新 Watcher 的 WithBaseline 以避免
+// 重启瞬间所有设备被识别为"新上线"。
+func (w *Watcher) Known() map[string]Device {
+	w.stateMu.Lock()
+	defer w.stateMu.Unlock()
+	out := make(map[string]Device, len(w.known))
+	for mac, d := range w.known {
+		out[mac] = d
+	}
+	return out
+}
+
 // EnsureFetcher 在 fetcher 未显式指定时, 触发一次 ubus 探测。多次调用安全。
 // 通常无需手动调用 - List / Run 内部会自动触发。
 func (w *Watcher) EnsureFetcher(ctx context.Context) error {
@@ -316,7 +364,7 @@ func (w *Watcher) EnsureFetcher(ctx context.Context) error {
 		}
 		f, kind, err := DetectFetcher(ctx, w.cfg.FetchTimeout)
 		if err != nil {
-			w.detectErr = err
+			w.detectErr = fmt.Errorf("%w: %v", ErrNoFetcher, err)
 			return
 		}
 		w.fetcher = f
@@ -345,6 +393,9 @@ func (w *Watcher) List(ctx context.Context) ([]Device, error) {
 	w.stateMu.Lock()
 	now := time.Now()
 	for mac, d := range m {
+		if w.cfg.DisableCooldown {
+			continue
+		}
 		cdTime, inCD := w.offlineCooldown[mac]
 		if !inCD || now.Sub(cdTime) >= w.cfg.OfflineCooldown {
 			continue
@@ -374,18 +425,24 @@ func (w *Watcher) List(ctx context.Context) ([]Device, error) {
 //
 // Watcher 不支持多次 Run: 自动探测的 Fetcher 会被 sync.Once 缓存, 且 known/misses/
 // cooldown 状态在 Run 返回后仍保留。如需重新启动, 请创建新的 Watcher。
+//
+// 错误可通过 errors.Is 判别: ErrHandlerRequired / ErrInvalidConfig / ErrNoFetcher /
+// ErrFetchFailed。
 func (w *Watcher) Run(ctx context.Context, onEvent EventHandler, onError ErrorHandler) error {
 	if onEvent == nil {
-		return fmt.Errorf("onEvent 不能为 nil")
+		return fmt.Errorf("%w: onEvent 不能为 nil", ErrHandlerRequired)
+	}
+	if err := w.cfg.Validate(); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidConfig, err)
 	}
 	if err := w.EnsureFetcher(ctx); err != nil {
-		return fmt.Errorf("自动探测 ubus 数据源失败: %w", err)
+		return err // EnsureFetcher 已 wrap ErrNoFetcher
 	}
 	baseline, err := w.fetchByMAC(ctx)
 	if err != nil {
-		return fmt.Errorf("初始基线拉取失败: %w", err)
+		return fmt.Errorf("%w: 初始基线拉取失败: %v", ErrFetchFailed, err)
 	}
-	// 将基线填入 watcher state
+	// 将基线填入 watcher state (WithBaseline 的内容保持, 新拉取覆盖同 MAC)
 	w.stateMu.Lock()
 	for mac, d := range baseline {
 		w.known[mac] = d
@@ -540,7 +597,9 @@ func (w *Watcher) handleDisconnectHint(ctx context.Context, mac string, onEvent 
 	}
 	delete(w.known, mac)
 	delete(w.misses, mac)
-	w.offlineCooldown[mac] = time.Now()
+	if !w.cfg.DisableCooldown {
+		w.offlineCooldown[mac] = time.Now()
+	}
 	// 抖动抑制检查: 窗口期内同类事件压制
 	now := time.Now()
 	if w.shouldSuppressFlap(mac, EventOffline, now) {
@@ -596,18 +655,20 @@ func (w *Watcher) emitConnectEvent(d Device, onEvent EventHandler) {
 		w.emitDecision(DecisionConnectSkippedKnown, d.MAC, "double-check")
 		return
 	}
-	if cdTime, inCD := w.offlineCooldown[d.MAC]; inCD && now.Sub(cdTime) < w.cfg.OfflineCooldown {
-		// 冷却期内: 弱信号时静默更新, 不触发事件
-		if d.RSSI != 0 && d.RSSI < w.cfg.CooldownReleaseRSSI {
-			// 同时刷新 cooldown 保持抑制, 避免冷却期自然过期后重新走离线流程
-			w.offlineCooldown[d.MAC] = now
-			w.known[d.MAC] = d
-			w.stateMu.Unlock()
-			w.emitDecision(DecisionCooldownSuppressOnline, d.MAC, fmt.Sprintf("RSSI=%d", d.RSSI))
-			return
+	if !w.cfg.DisableCooldown {
+		if cdTime, inCD := w.offlineCooldown[d.MAC]; inCD && now.Sub(cdTime) < w.cfg.OfflineCooldown {
+			// 冷却期内: 弱信号时静默更新, 不触发事件
+			if d.RSSI != 0 && d.RSSI < w.cfg.CooldownReleaseRSSI {
+				// 同时刷新 cooldown 保持抑制, 避免冷却期自然过期后重新走离线流程
+				w.offlineCooldown[d.MAC] = now
+				w.known[d.MAC] = d
+				w.stateMu.Unlock()
+				w.emitDecision(DecisionCooldownSuppressOnline, d.MAC, fmt.Sprintf("RSSI=%d", d.RSSI))
+				return
+			}
+			delete(w.offlineCooldown, d.MAC)
+			w.emitDecision(DecisionCooldownCleared, d.MAC, fmt.Sprintf("RSSI=%d", d.RSSI))
 		}
-		delete(w.offlineCooldown, d.MAC)
-		w.emitDecision(DecisionCooldownCleared, d.MAC, fmt.Sprintf("RSSI=%d", d.RSSI))
 	}
 	// 抖动抑制: 窗口期内同类事件静默更新
 	if w.shouldSuppressFlap(d.MAC, EventOnline, now) {
@@ -680,7 +741,7 @@ func diff(known, cur map[string]Device, misses map[string]int, apRaw, apSet map[
 	// emitIfNotSuppressed 统一的事件发射: 除冷却期外再叠加 FlapSuppressionWindow 抑制,
 	// 防止中等信号设备在短时间内连续触发同类事件。
 	emitIfNotSuppressed := func(kind EventKind, d Device) {
-		if cfg.FlapSuppressionWindow > 0 {
+		if !cfg.DisableFlapSuppression && cfg.FlapSuppressionWindow > 0 {
 			if last, ok := lastEventAt[d.MAC]; ok && last.kind == kind && now.Sub(last.at) < cfg.FlapSuppressionWindow {
 				// 窗口期内同类事件压制
 				if kind == EventOnline {
@@ -700,11 +761,27 @@ func diff(known, cur map[string]Device, misses map[string]int, apRaw, apSet map[
 		onEvent(Event{Time: now, Kind: kind, Device: d})
 	}
 
-	// 清理过期的冷却记录
+	// 清理过期的冷却记录 (DisableCooldown=true 时 cooldown map 始终为空, 无开销)
 	for mac, t := range cooldown {
 		if now.Sub(t) > cfg.OfflineCooldown {
 			delete(cooldown, mac)
 		}
+	}
+
+	// noteCooldown 统一的冷却期记录入口, DisableCooldown=true 时跳过写入。
+	noteCooldown := func(mac string) {
+		if cfg.DisableCooldown {
+			return
+		}
+		cooldown[mac] = now
+	}
+	// inCooldown DisableCooldown=true 时永远返回 false。
+	inCooldown := func(mac string) bool {
+		if cfg.DisableCooldown {
+			return false
+		}
+		cdTime, ok := cooldown[mac]
+		return ok && now.Sub(cdTime) < cfg.OfflineCooldown
 	}
 
 	for mac, d := range cur {
@@ -713,7 +790,7 @@ func diff(known, cur map[string]Device, misses map[string]int, apRaw, apSet map[
 		switch {
 		case !ok:
 			// 冷却期检查: 刚判离线的设备不立即触发上线
-			if cdTime, inCD := cooldown[mac]; inCD && now.Sub(cdTime) < cfg.OfflineCooldown {
+			if inCooldown(mac) {
 				// 冷却期内: 信号必须恢复到较强水平才允许上线
 				if d.RSSI != 0 && d.RSSI < cfg.CooldownReleaseRSSI {
 					// 静默加入 known, 并刷新 cooldown 保持抑制状态,
@@ -767,12 +844,12 @@ func diff(known, cur map[string]Device, misses map[string]int, apRaw, apSet map[
 				}
 				emitDecision(DecisionPollWeakSignalMiss, mac, fmt.Sprintf("RSSI=%d misses=%d/%d", rssi, misses[mac], threshold))
 				if misses[mac] >= threshold {
-					if _, inCD := cooldown[mac]; inCD {
+					if inCooldown(mac) {
 						emitDecision(DecisionCooldownSuppressOffline, mac, "")
 					} else {
 						emitIfNotSuppressed(EventOffline, d)
 					}
-					cooldown[mac] = now
+					noteCooldown(mac)
 					delete(known, mac)
 					delete(misses, mac)
 				}
@@ -792,12 +869,12 @@ func diff(known, cur map[string]Device, misses map[string]int, apRaw, apSet map[
 		}
 		if hasARP && (arp.State == "FAILED" || arp.State == "INCOMPLETE") {
 			emitDecision(DecisionPollARPFailedOffline, mac, fmt.Sprintf("state=%s", arp.State))
-			if _, inCD := cooldown[mac]; inCD {
+			if inCooldown(mac) {
 				emitDecision(DecisionCooldownSuppressOffline, mac, "")
 			} else {
 				emitIfNotSuppressed(EventOffline, d)
 			}
-			cooldown[mac] = now
+			noteCooldown(mac)
 			delete(known, mac)
 			delete(misses, mac)
 			continue
@@ -806,12 +883,12 @@ func diff(known, cur map[string]Device, misses map[string]int, apRaw, apSet map[
 		misses[mac]++
 		if misses[mac] >= cfg.OfflineMisses {
 			emitDecision(DecisionPollMissesExhausted, mac, fmt.Sprintf("misses=%d/%d", misses[mac], cfg.OfflineMisses))
-			if _, inCD := cooldown[mac]; inCD {
+			if inCooldown(mac) {
 				emitDecision(DecisionCooldownSuppressOffline, mac, "")
 			} else {
 				emitIfNotSuppressed(EventOffline, d)
 			}
-			cooldown[mac] = now
+			noteCooldown(mac)
 			delete(known, mac)
 			delete(misses, mac)
 		}

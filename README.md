@@ -205,12 +205,14 @@ BA:79:97:73:89:8D    192.168.1.213    BA799773898D      -        Phone   -44(极
 |------|---------|
 | `argus.Watcher` | **EN** Main entry · **中文** 主入口;`New(opts...) *Watcher` |
 | `argus.Event` / `EventKind` | **EN** Business events (Online/Offline/Change) · **中文** 业务事件 |
-| `argus.Decision` / `DecisionKind` | **EN** Internal decision trace (16 branches) · **中文** 内部判定链路(16 种分支) |
+| `argus.Decision` / `DecisionKind` | **EN** Internal decision trace (17 branches) · **中文** 内部判定链路(17 种分支) |
 | `argus.Config` | **EN** Tunable thresholds · **中文** 阈值配置 |
 | `argus.Fetcher` | **EN** Data source interface, auto-detected · **中文** 数据源接口,自动探测 |
 | `argus.Prober` | **EN** Liveness probe; default `ICMPProber{Timeout: 1s}` · **中文** 活性探测,默认 ICMP |
 | `argus.SyslogEvent` | **EN** Raw syslog parse result · **中文** 原始系统日志解析结果 |
-| `argus.SetupLocalTimezone()` | **EN** Parse `/etc/TZ` (e.g. `CST-8`) · **中文** 从 `/etc/TZ` 设置 `time.Local` |
+| `argus.DetectLocalLocation()` | **EN** Parse `/etc/TZ` → `*time.Location` (no global mutation) · **中文** 解析 `/etc/TZ`,不修改全局状态 |
+| `argus.SetupLocalTimezone()` | **EN** *Deprecated.* Mutates `time.Local` · **中文** *已废弃*,修改全局 `time.Local` |
+| `argus.ErrHandlerRequired` / `ErrInvalidConfig` / `ErrNoFetcher` / `ErrFetchFailed` | **EN** Sentinel errors (`errors.Is`-compatible) · **中文** Sentinel 错误,可用 `errors.Is` 判别 |
 
 Functional options · 函数式选项:
 
@@ -218,6 +220,7 @@ Functional options · 函数式选项:
 argus.WithConfig(cfg)                      // EN: override defaults · 中文: 覆盖默认
 argus.WithFetcher(custom)                  // EN: custom data source · 中文: 注入自定义数据源
 argus.WithProber(nil)                      // EN: disable liveness probe · 中文: 关闭活性探测
+argus.WithBaseline(old.Known())            // EN: seed known-set on restart · 中文: 热重载保留设备表
 argus.OnFetcherDetected(func(k) {...})     // EN: detection callback · 中文: 自动探测回调
 argus.WithDecisionHandler(func(d) {...})   // EN: decision trace · 中文: 决策观测
 ```

@@ -72,6 +72,11 @@ func DetectLocalLocation() *time.Location {
 // 此函数能让 OpenWrt 路由器上的时间输出与系统时间一致。
 //
 // 返回选中的时区, 未识别时返回 UTC 不修改 time.Local。
+//
+// Deprecated: 修改全局 time.Local 是库层面的反模式。库的使用方应改用
+// DetectLocalLocation() 获取 *time.Location, 然后在自己的代码里通过
+// time.Time.In(loc) 做本地化格式化, 或在 main 里自行设置 time.Local。
+// 此函数保留用于向后兼容, 不会在后续版本中移除, 但不推荐新代码使用。
 func SetupLocalTimezone() *time.Location {
 	if loc := loadRouterLocation(); loc != nil {
 		time.Local = loc

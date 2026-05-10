@@ -17,6 +17,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.0] - 2026-05-09
+
+Focus on **API ergonomics & robustness** — no behavior change for existing users
+on default config, new opt-in knobs for lifecycle handoff and feature toggling,
+and typed errors for programmatic error handling.
+
+### Added · 新增
+
+- **`Config.DisableCooldown` / `Config.DisableFlapSuppression`**
+  Explicit boolean switches to turn off cooldown / flap-suppression. Previously
+  required the magic value `time.Nanosecond` or `FlapSuppressionWindow=0`
+  (which the `WithConfig` zero-value convention treated as "preserve default").
+  Default `false` preserves existing behavior. (`watcher.go`)
+
+- **`Watcher.Known() map[string]Device`**
+  Thread-safe deep-copy snapshot of the currently-known device set, for use
+  with the new `WithBaseline` option. (`watcher.go`)
+
+- **`WithBaseline(map[string]Device) Option`**
+  Seeds a new `Watcher`'s `known` set at construction time. Intended for hot
+  reload / process restart: take `old.Known()`, pass to `New(WithBaseline(snap))`
+  to avoid the entire device table re-emitting as "new online" events on boot.
+  (`watcher.go`)
+
+- **Sentinel errors** (`errors.go`)
+  - `ErrHandlerRequired` — `Run` called with `nil` `onEvent`
+  - `ErrInvalidConfig` — `Config.Validate()` rejected the config
+  - `ErrNoFetcher` — ubus auto-detect found no `ahsapd` / `hostapd`
+  - `ErrFetchFailed` — initial baseline fetch failed
+
+  All reachable via `errors.Is`. Existing `fmt.Errorf` wrappers are preserved
+  for their human-readable context.
+
+### Changed · 变更
+
+- **`Run` now calls `Config.Validate()` at entry.** Previously `Config` validation
+  was exported but only invoked by user code. Invalid configs now fail fast before
+  any goroutine starts, returning `ErrInvalidConfig`. No behavior change for
+  users on `DefaultConfig()` / sane configs. (`watcher.go`)
+
+### Deprecated · 废弃
+
+- **`SetupLocalTimezone()`** is marked `Deprecated` in its docstring. It mutates
+  global `time.Local`, which is a library anti-pattern. Consumers should use
+  `DetectLocalLocation()` to get a `*time.Location` and format with
+  `t.In(loc)` (or set `time.Local` in their own `main`). The function itself
+  is retained for backward compatibility and will not be removed.
+  (`timezone.go`)
+
+### Tests · 测试
+
+- `TestRunReturnsSentinelErrHandlerRequired` / `TestRunReturnsSentinelErrInvalidConfig`
+- `TestConfigDisableCooldownStopsSuppression`
+- `TestConfigDisableFlapSuppression`
+- `TestWithBaselineSeedsKnown`
+- `TestKnownReturnsIndependentCopy`
+
+All pass under `go test -race`.
+
+---
+
 ## [0.2.0] - 2026-05-09
 
 ### Changed · 变更
@@ -153,6 +214,7 @@ Initial public release · 首次公开发布。
 Link references (kept at the bottom for readability).
 -->
 
-[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/xxl6097/argusd/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/xxl6097/argusd/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/xxl6097/argusd/releases/tag/v0.1.0

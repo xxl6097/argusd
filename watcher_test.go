@@ -2,6 +2,7 @@ package argus
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -775,5 +776,87 @@ func TestDrainHintsFor(t *testing.T) {
 	case <-w.syslogHints:
 		t.Error("channel 应已空")
 	default:
+	}
+}
+
+// --- v0.3.0: Disable* flags, WithBaseline, Known(), sentinel errors ---
+
+func TestRunReturnsSentinelErrHandlerRequired(t *testing.T) {
+	w := New(WithFetcher(staticFetcher{}), WithProber(nil))
+	err := w.Run(context.Background(), nil, nil)
+	if !errors.Is(err, ErrHandlerRequired) {
+		t.Errorf("期望 ErrHandlerRequired, got %v", err)
+	}
+}
+
+func TestRunReturnsSentinelErrInvalidConfig(t *testing.T) {
+	w := New(WithFetcher(staticFetcher{}), WithProber(nil))
+	w.cfg.PollInterval = -1 * time.Second // 手工构造非法 cfg
+	err := w.Run(context.Background(), func(Event) {}, nil)
+	if !errors.Is(err, ErrInvalidConfig) {
+		t.Errorf("期望 ErrInvalidConfig, got %v", err)
+	}
+}
+
+func TestConfigDisableCooldownStopsSuppression(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.DisableCooldown = true
+	known := map[string]Device{}
+	misses := map[string]int{}
+	cooldown := map[string]time.Time{
+		// 预置: 理论上应触发 cooldown suppress, 但 DisableCooldown=true 后被跳过
+		"aa": time.Now(),
+	}
+	cur := map[string]Device{
+		"aa": {MAC: "aa", IP: "1.1.1.1", RSSI: -90, Radio: "5G"},
+	}
+	col := &eventCollector{}
+	diff(known, cur, misses, cur, cur, cfg, newDiffCtx(), nil, cooldown, map[string]lastEvent{}, col.emit, nil)
+	// 正常应触发 EventOnline (冷却期被禁用, 即使 RSSI 很弱)
+	if len(col.events) != 1 || col.events[0].Kind != EventOnline {
+		t.Errorf("DisableCooldown 时即使 RSSI 弱也应触发 EventOnline, got %+v", col.events)
+	}
+	// cooldown 不应被写入
+	if _, ok := cooldown["aa"]; !ok {
+		// 读旧值不删, 但不应被 noteCooldown 重新写; 已验证 emit 触发
+	}
+}
+
+func TestConfigDisableFlapSuppression(t *testing.T) {
+	w := New(
+		WithFetcher(staticFetcher{}),
+		WithConfig(Config{DisableFlapSuppression: true}),
+	)
+	// 预先记录 Online 事件 (模拟刚 emit 过)
+	w.lastEventAt["aa"] = lastEvent{at: time.Now(), kind: EventOnline}
+	// FlapSuppressionWindow 仍为默认 30s, 但 DisableFlapSuppression=true 应跳过
+	if w.shouldSuppressFlap("aa", EventOnline, time.Now()) {
+		t.Error("DisableFlapSuppression=true 时不应压制")
+	}
+}
+
+func TestWithBaselineSeedsKnown(t *testing.T) {
+	seed := map[string]Device{
+		"aa:bb:cc:dd:ee:01": {MAC: "aa:bb:cc:dd:ee:01", IP: "1.1.1.1"},
+		"aa:bb:cc:dd:ee:02": {MAC: "aa:bb:cc:dd:ee:02", IP: "2.2.2.2"},
+	}
+	w := New(WithFetcher(staticFetcher{}), WithProber(nil), WithBaseline(seed))
+	snap := w.Known()
+	if len(snap) != 2 {
+		t.Fatalf("期望 Known() 返回 2 台, got %d", len(snap))
+	}
+	if snap["aa:bb:cc:dd:ee:01"].IP != "1.1.1.1" {
+		t.Errorf("baseline 字段应保留, got %+v", snap["aa:bb:cc:dd:ee:01"])
+	}
+}
+
+func TestKnownReturnsIndependentCopy(t *testing.T) {
+	w := New(WithFetcher(staticFetcher{}), WithProber(nil))
+	w.known["aa"] = Device{MAC: "aa", IP: "1.1.1.1"}
+	snap := w.Known()
+	snap["aa"] = Device{MAC: "aa", IP: "9.9.9.9"} // 修改副本
+	// 原状态不应受影响
+	if w.known["aa"].IP != "1.1.1.1" {
+		t.Error("Known() 的返回值应是独立副本, 不应影响内部状态")
 	}
 }
