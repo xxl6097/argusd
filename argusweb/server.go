@@ -6,7 +6,8 @@
 // framework, no external CDN. The handler set is three endpoints:
 //
 //   - GET /             — embedded dashboard page
-//   - GET /api/devices  — JSON snapshot of the current Known() set
+//   - GET /api/devices  — JSON snapshot (online devices from Watcher.Known
+//     merged with recently-offline devices cached here)
 //   - GET /api/events   — SSE stream of Online/Offline/Change events
 //
 // The package is opt-in (no code in the core library changes); typical
@@ -36,12 +37,39 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	argus "github.com/xxl6097/argus"
 )
 
 //go:embed assets/dashboard.html
 var dashboardHTML []byte
+
+// Defaults for the offline device cache. Override via Option at
+// construction time (see NewServer).
+const (
+	defaultOfflineRetention = 7 * 24 * time.Hour
+	defaultOfflineMax       = 512
+)
+
+// Option configures a Server at construction time.
+type Option func(*Server)
+
+// WithOfflineRetention sets how long a device remains in the /api/devices
+// response after it goes offline. Zero or negative disables retention
+// entirely (offline devices drop out of the list immediately on
+// EventOffline). Default: 7 days.
+func WithOfflineRetention(d time.Duration) Option {
+	return func(s *Server) { s.offlineTTL = d }
+}
+
+// WithOfflineMax caps the number of offline devices retained in the
+// dashboard cache. When the cap is reached, the oldest entry (by offline
+// timestamp) is evicted to make room. Zero or negative disables the cap.
+// Default: 512.
+func WithOfflineMax(n int) Option {
+	return func(s *Server) { s.offlineMax = n }
+}
 
 // Server is an http.Handler that serves the argus dashboard + API.
 // Embed it in your own http.ServeMux or pass it directly to
@@ -56,6 +84,24 @@ type Server struct {
 	// registers a channel on connect and un-registers on disconnect.
 	subsMu sync.RWMutex
 	subs   map[chan argus.Event]struct{}
+
+	// Offline cache: devices that have gone Offline but we still want to
+	// surface in /api/devices. Entries are added by OnEvent on EventOffline
+	// and removed on EventOnline for the same MAC; also evicted by TTL
+	// (offlineTTL) and soft cap (offlineMax).
+	offlineMu  sync.Mutex
+	offline    map[string]offlineEntry
+	offlineTTL time.Duration
+	offlineMax int
+}
+
+// offlineEntry stores the last-known Device shape at the moment it went
+// offline, plus the time we observed the offline event. LastSeen on the
+// Device itself is preserved from the library's point of view (wire
+// format reports both as separate fields).
+type offlineEntry struct {
+	dev       argus.Device
+	offlineAt time.Time
 }
 
 // NewServer constructs a dashboard server around the given Watcher.
@@ -75,11 +121,17 @@ type Server struct {
 //	    srv.OnEvent(e)
 //	    myBusinessHandler(e)
 //	}, nil)
-func NewServer(w *argus.Watcher) *Server {
+func NewServer(w *argus.Watcher, opts ...Option) *Server {
 	s := &Server{
-		watcher: w,
-		mux:     http.NewServeMux(),
-		subs:    make(map[chan argus.Event]struct{}),
+		watcher:    w,
+		mux:        http.NewServeMux(),
+		subs:       make(map[chan argus.Event]struct{}),
+		offline:    make(map[string]offlineEntry),
+		offlineTTL: defaultOfflineRetention,
+		offlineMax: defaultOfflineMax,
+	}
+	for _, opt := range opts {
+		opt(s)
 	}
 	s.mux.HandleFunc("/", s.handleIndex)
 	s.mux.HandleFunc("/api/devices", s.handleDevices)
@@ -92,15 +144,24 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 
-// OnEvent is a DecisionHandler-style entry point that fans an Event
-// out to all currently connected SSE subscribers. Safe to call from
-// any goroutine.
+// OnEvent fans an Event out to SSE subscribers AND maintains the offline
+// cache used by /api/devices. Safe to call from any goroutine.
 //
-// Returns immediately; if a subscriber's channel is full the event is
-// dropped for that subscriber only (other subscribers unaffected). The
-// channel buffer is deliberately small (8) so a slow client does not
-// pin memory for the whole server.
+// Offline cache behavior:
+//   - EventOffline adds the Device to the cache (keyed by MAC).
+//   - EventOnline removes the MAC from the cache (the Watcher's Known()
+//     will surface it as online).
+//   - EventChange updates the cached entry IF the MAC is currently in
+//     the cache (i.e. the device is in its offline retention window
+//     and picked up a field change anyway).
+//
+// SSE fan-out: returns immediately; if a subscriber's channel is full
+// the event is dropped for that subscriber only (others unaffected).
+// The channel buffer is deliberately small (8) so a slow client does
+// not pin memory for the whole server.
 func (s *Server) OnEvent(e argus.Event) {
+	s.updateOfflineCache(e)
+
 	s.subsMu.RLock()
 	defer s.subsMu.RUnlock()
 	for ch := range s.subs {
@@ -110,6 +171,48 @@ func (s *Server) OnEvent(e argus.Event) {
 			// Slow subscriber — drop. Clients should reconnect if they
 			// miss events; the dashboard /api/devices endpoint lets
 			// them re-sync on (re)load.
+		}
+	}
+}
+
+func (s *Server) updateOfflineCache(e argus.Event) {
+	switch e.Kind {
+	case argus.EventOffline:
+		s.offlineMu.Lock()
+		defer s.offlineMu.Unlock()
+		if s.offlineMax > 0 && len(s.offline) >= s.offlineMax {
+			// Evict the oldest entry by offlineAt. This is O(n) but n is
+			// bounded by offlineMax and only triggers when at capacity,
+			// so overall cost is amortized and the map stays bounded.
+			var oldestMAC string
+			var oldestTime time.Time
+			for m, entry := range s.offline {
+				if oldestMAC == "" || entry.offlineAt.Before(oldestTime) {
+					oldestMAC = m
+					oldestTime = entry.offlineAt
+				}
+			}
+			delete(s.offline, oldestMAC)
+		}
+		s.offline[normalizeMAC(e.Device.MAC)] = offlineEntry{
+			dev:       e.Device,
+			offlineAt: nonZeroTime(e.Time),
+		}
+
+	case argus.EventOnline:
+		s.offlineMu.Lock()
+		defer s.offlineMu.Unlock()
+		delete(s.offline, normalizeMAC(e.Device.MAC))
+
+	case argus.EventChange:
+		// Only relevant if the MAC is currently in our offline cache —
+		// an offline device that happened to get an enrichment update.
+		s.offlineMu.Lock()
+		defer s.offlineMu.Unlock()
+		mac := normalizeMAC(e.Device.MAC)
+		if existing, ok := s.offline[mac]; ok {
+			existing.dev = e.Device
+			s.offline[mac] = existing
 		}
 	}
 }
@@ -129,23 +232,55 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 // deviceRow is the wire format for /api/devices. Fields mirror the
 // stable JSON field names in STABILITY.md so consumers can script
 // against them.
+//
+// Status and OfflineAtMs are argusweb additions (since v0.13.3) and
+// are documented in STABILITY.md under the argusweb subpackage.
 type deviceRow struct {
-	MAC        string `json:"mac"`
-	IP         string `json:"ip,omitempty"`
-	Hostname   string `json:"hostname,omitempty"`
-	Vendor     string `json:"vendor,omitempty"`
-	Type       string `json:"type,omitempty"`
-	Radio      string `json:"radio,omitempty"`
-	SSID       string `json:"ssid,omitempty"`
-	Channel    int    `json:"channel,omitempty"`
-	RSSI       int    `json:"rssi,omitempty"`
-	Wired      bool   `json:"wired"`
-	LastSeenMs int64  `json:"last_seen_ms,omitempty"`
+	MAC          string `json:"mac"`
+	IP           string `json:"ip,omitempty"`
+	Hostname     string `json:"hostname,omitempty"`
+	Vendor       string `json:"vendor,omitempty"`
+	Type         string `json:"type,omitempty"`
+	Radio        string `json:"radio,omitempty"`
+	SSID         string `json:"ssid,omitempty"`
+	Channel      int    `json:"channel,omitempty"`
+	RSSI         int    `json:"rssi,omitempty"`
+	Wired        bool   `json:"wired"`
+	LastSeenMs   int64  `json:"last_seen_ms,omitempty"`
+	Status       string `json:"status"`                   // "online" | "offline"
+	OfflineAtMs  int64  `json:"offline_at_ms,omitempty"`  // set when status=="offline"
 }
 
 func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 	known := s.watcher.Known()
-	rows := make([]deviceRow, 0, len(known))
+
+	// Prune offline cache: drop entries older than offlineTTL, and any
+	// MAC that reappeared in known (defensive — OnEvent should have
+	// already removed it, but a lost EventOnline shouldn't pin an
+	// incorrect offline row forever).
+	s.offlineMu.Lock()
+	now := time.Now()
+	for mac, entry := range s.offline {
+		if s.offlineTTL > 0 && now.Sub(entry.offlineAt) > s.offlineTTL {
+			delete(s.offline, mac)
+			continue
+		}
+		if _, onlineNow := known[mac]; onlineNow {
+			delete(s.offline, mac)
+		}
+	}
+	// Copy offline entries while holding the lock so we can release it
+	// before the JSON encoding.
+	offlineSnapshot := make(map[string]offlineEntry, len(s.offline))
+	for k, v := range s.offline {
+		offlineSnapshot[k] = v
+	}
+	s.offlineMu.Unlock()
+
+	rows := make([]deviceRow, 0, len(known)+len(offlineSnapshot))
+	onlineCount := 0
+	offlineCount := 0
+
 	for _, d := range known {
 		row := deviceRow{
 			MAC:      strings.ToUpper(d.MAC),
@@ -158,13 +293,49 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 			Channel:  d.Channel,
 			RSSI:     d.RSSI,
 			Wired:    d.Wired(),
+			Status:   "online",
 		}
 		if !d.LastSeen.IsZero() {
 			row.LastSeenMs = d.LastSeen.UnixMilli()
 		}
 		rows = append(rows, row)
+		onlineCount++
 	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].MAC < rows[j].MAC })
+
+	for mac, entry := range offlineSnapshot {
+		if _, ok := known[mac]; ok {
+			continue // defensive: already online, don't double-count
+		}
+		d := entry.dev
+		row := deviceRow{
+			MAC:         strings.ToUpper(d.MAC),
+			IP:          d.IP,
+			Hostname:    d.Hostname,
+			Vendor:      d.Vendor,
+			Type:        d.Type,
+			Radio:       d.Radio,
+			SSID:        d.SSID,
+			Channel:     d.Channel,
+			RSSI:        d.RSSI,
+			Wired:       d.Wired(),
+			Status:      "offline",
+			OfflineAtMs: entry.offlineAt.UnixMilli(),
+		}
+		if !d.LastSeen.IsZero() {
+			row.LastSeenMs = d.LastSeen.UnixMilli()
+		}
+		rows = append(rows, row)
+		offlineCount++
+	}
+
+	// Sort: online first, then offline, each alphabetical by MAC. Keeps
+	// the active fleet visually on top; offline history trails below.
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Status != rows[j].Status {
+			return rows[i].Status == "online"
+		}
+		return rows[i].MAC < rows[j].MAC
+	})
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
@@ -173,6 +344,8 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 	_ = enc.Encode(map[string]any{
 		"devices": rows,
 		"count":   len(rows),
+		"online":  onlineCount,
+		"offline": offlineCount,
 	})
 }
 
@@ -231,4 +404,15 @@ func (s *Server) Shutdown(_ context.Context) {
 		delete(s.subs, ch)
 		close(ch)
 	}
+}
+
+func normalizeMAC(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
+}
+
+func nonZeroTime(t time.Time) time.Time {
+	if t.IsZero() {
+		return time.Now()
+	}
+	return t
 }

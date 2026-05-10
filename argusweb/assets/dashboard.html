@@ -72,6 +72,10 @@
   .rssi-weak    { color: var(--change); }
   .rssi-vweak   { color: var(--offline); }
 
+  /* Offline row: desaturated, so the eye is drawn to the online set first. */
+  tr.is-offline td, .card-row.is-offline { opacity: 0.55; }
+  tr.is-offline td.mac, .card-row.is-offline .cr-mac { opacity: 0.85; }
+
   /* ---------- Devices (mobile card list) ---------- */
   .cards { display: none; }
   .card-row {
@@ -79,15 +83,16 @@
     display: grid; gap: 4px 10px;
     grid-template-columns: 1fr auto;
     grid-template-areas:
-      "mac   rssi"
+      "mac   status"
       "host  host"
-      "link  link";
+      "link  rssi";
   }
-  .card-row .cr-mac  { grid-area: mac;  font-family: ui-monospace, Menlo, monospace; font-size: 13px; font-weight: 500; }
-  .card-row .cr-rssi { grid-area: rssi; font-size: 12px; white-space: nowrap; }
-  .card-row .cr-host { grid-area: host; font-size: 12px; color: var(--fg); word-break: break-all; }
+  .card-row .cr-mac    { grid-area: mac;    font-family: ui-monospace, Menlo, monospace; font-size: 13px; font-weight: 500; }
+  .card-row .cr-status { grid-area: status; justify-self: end; }
+  .card-row .cr-host   { grid-area: host;   font-size: 12px; color: var(--fg); word-break: break-all; }
   .card-row .cr-host .ip { color: var(--muted); }
-  .card-row .cr-link { grid-area: link; font-size: 11px; color: var(--muted); }
+  .card-row .cr-link   { grid-area: link;   font-size: 11px; color: var(--muted); }
+  .card-row .cr-rssi   { grid-area: rssi;   font-size: 12px; white-space: nowrap; justify-self: end; }
 
   /* ---------- Events list ---------- */
   #events-list {
@@ -141,7 +146,8 @@
   <span class="sub">设备监控 · Device Monitor</span>
   <span class="status" id="status">
     <span class="pill" id="conn" style="background: rgba(138,143,152,0.15); color: var(--muted);">连接中…</span>
-    <span class="pill online" id="count">0 台</span>
+    <span class="pill online" id="count-online" title="在线 · online">在线 0</span>
+    <span class="pill offline" id="count-offline" title="离线 · offline">离线 0</span>
   </span>
 </header>
 <main>
@@ -150,6 +156,7 @@
     <!-- Desktop / tablet view -->
     <table class="devices-table">
       <thead><tr>
+        <th>状态 · Status</th>
         <th>MAC</th><th>IP</th><th>主机名 · Host</th>
         <th>信号 · RSSI</th><th>类型 · Link</th>
       </tr></thead>
@@ -173,11 +180,12 @@
 (function () {
   "use strict";
 
-  const elBody   = document.getElementById("devices-body");
-  const elCards  = document.getElementById("devices-cards");
-  const elEvents = document.getElementById("events-list");
-  const elCount  = document.getElementById("count");
-  const elConn   = document.getElementById("conn");
+  const elBody         = document.getElementById("devices-body");
+  const elCards        = document.getElementById("devices-cards");
+  const elEvents       = document.getElementById("events-list");
+  const elCountOnline  = document.getElementById("count-online");
+  const elCountOffline = document.getElementById("count-offline");
+  const elConn         = document.getElementById("conn");
 
   const MAX_EVENT_LINES = 200;
   let eventsStarted = false;
@@ -207,11 +215,20 @@
   }
 
   function renderDevices(rows) {
+    let onlineN = 0, offlineN = 0;
+
     // Desktop table
     elBody.innerHTML = "";
     for (const d of rows) {
+      const isOff = d.status === "offline";
+      if (isOff) offlineN++; else onlineN++;
       const tr = document.createElement("tr");
+      if (isOff) tr.classList.add("is-offline");
+      const statusPill = isOff
+        ? '<span class="pill offline">离线 ' + esc(relativeTime(d.offline_at_ms)) + '</span>'
+        : '<span class="pill online">在线</span>';
       tr.innerHTML =
+        '<td>' + statusPill + '</td>' +
         '<td class="mac">' + esc(d.mac) + '</td>' +
         '<td>' + esc(d.ip || "—") + '</td>' +
         '<td class="host">' + esc(d.hostname || "—") + '</td>' +
@@ -223,19 +240,41 @@
     // Mobile cards
     elCards.innerHTML = "";
     for (const d of rows) {
+      const isOff = d.status === "offline";
       const card = document.createElement("div");
-      card.className = "card-row";
+      card.className = "card-row" + (isOff ? " is-offline" : "");
       const host = d.hostname || "—";
       const ip   = d.ip || "—";
+      const statusPill = isOff
+        ? '<span class="pill offline">离线 ' + esc(relativeTime(d.offline_at_ms)) + '</span>'
+        : '<span class="pill online">在线</span>';
       card.innerHTML =
         '<div class="cr-mac">' + esc(d.mac) + '</div>' +
-        '<div class="cr-rssi ' + rssiClass(d.rssi) + '">' + esc(rssiText(d)) + '</div>' +
+        '<div class="cr-status">' + statusPill + '</div>' +
         '<div class="cr-host">' + esc(host) + ' <span class="ip">· ' + esc(ip) + '</span></div>' +
-        '<div class="cr-link">' + esc(linkText(d)) + '</div>';
+        '<div class="cr-link">' + esc(linkText(d)) + '</div>' +
+        '<div class="cr-rssi ' + rssiClass(d.rssi) + '">' + esc(rssiText(d)) + '</div>';
       elCards.appendChild(card);
     }
 
-    elCount.textContent = rows.length + " 台";
+    elCountOnline.textContent  = "在线 " + onlineN;
+    elCountOffline.textContent = "离线 " + offlineN;
+  }
+
+  // relativeTime renders a unix-ms timestamp as a compact Chinese-EN relative
+  // string like "2分钟前 2m ago" / "刚刚 just now" / "3天前 3d ago".
+  function relativeTime(ms) {
+    if (!ms) return "";
+    const delta = Math.max(0, Date.now() - ms);
+    const s = Math.floor(delta / 1000);
+    if (s < 10)    return "刚刚";
+    if (s < 60)    return s + "秒前";
+    const m = Math.floor(s / 60);
+    if (m < 60)   return m + "分钟前";
+    const h = Math.floor(m / 60);
+    if (h < 24)   return h + "小时前";
+    const d = Math.floor(h / 24);
+    return d + "天前";
   }
 
   async function reloadDevices() {

@@ -65,12 +65,19 @@ Types and functions used by **library consumers** — these must be preserved ac
   - `(*LabeledCounters).Reset()`
   - `LabelExtractor func(Decision) []string`
 - Subpackage `argusweb` (stable from v0.13.0) — opt-in HTTP + SSE dashboard:
-  - `argusweb.NewServer(*argus.Watcher) *Server` — builds an `http.Handler`
+  - `argusweb.NewServer(*argus.Watcher, ...Option) *Server` — builds an `http.Handler`
+  - Options (since v0.13.3): `WithOfflineRetention(d time.Duration)`, `WithOfflineMax(n int)` — control how long and how many offline devices are retained in `/api/devices` (default 7 days, 512 entries)
   - `(*Server).ServeHTTP` / `OnEvent(Event)` / `Shutdown(ctx)`
   - HTTP surface: `GET /` (dashboard HTML), `GET /api/devices`
     (JSON snapshot keyed by stable JSON field names), `GET /api/events`
     (Server-Sent Events stream of Online/Offline/Change; event name
     matches `EventKind.String()`)
+  - `/api/devices` (stable wire shape since v0.13.3):
+    - Body: `{"count": N, "online": N, "offline": N, "devices": [...]}`
+    - Row adds `status` (`"online"` | `"offline"`) and optional
+      `offline_at_ms` (unix-ms, set when status=="offline")
+    - Offline entries are surfaced from an in-process cache fed by
+      SSE `EventOffline` events and aged out per `WithOfflineRetention`
   - Zero third-party deps; single embedded HTML file with vanilla JS
 
 ### JSON serialization (stable from v0.6.0)

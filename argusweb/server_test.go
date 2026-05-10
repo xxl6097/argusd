@@ -217,3 +217,182 @@ func TestShutdownClosesSubscribers(t *testing.T) {
 	// that nothing panics.
 	srv.OnEvent(argus.Event{Kind: argus.EventOnline})
 }
+
+// --- offline cache + /api/devices status surface (v0.13.3) --------------
+
+// fetchDevicesBody is a test helper that GETs /api/devices against the
+// given server and decodes the JSON body into a typed struct.
+func fetchDevicesBody(t *testing.T, ts *httptest.Server) devicesBody {
+	t.Helper()
+	resp, err := http.Get(ts.URL + "/api/devices")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body devicesBody
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+type devicesBody struct {
+	Count   int              `json:"count"`
+	Online  int              `json:"online"`
+	Offline int              `json:"offline"`
+	Devices []map[string]any `json:"devices"`
+}
+
+func TestDevicesOfflineEventRetainsDevice(t *testing.T) {
+	// After an Offline event, the device should still appear in
+	// /api/devices with status="offline".
+	w := argus.New(argus.WithFetcher(&argustest.FixedFetcher{}))
+	srv := argusweb.NewServer(w)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	srv.OnEvent(argus.Event{
+		Time:   time.Now(),
+		Kind:   argus.EventOffline,
+		Device: argus.Device{MAC: "aa:bb:cc:dd:ee:ff", IP: "10.0.0.9", Hostname: "phone1", Radio: "5G"},
+	})
+
+	body := fetchDevicesBody(t, ts)
+	if body.Count != 1 || body.Offline != 1 || body.Online != 0 {
+		t.Fatalf("count=%d online=%d offline=%d, want 1/0/1 (%+v)", body.Count, body.Online, body.Offline, body.Devices)
+	}
+	d := body.Devices[0]
+	if d["status"] != "offline" {
+		t.Errorf("status = %v, want offline", d["status"])
+	}
+	if d["mac"] != "AA:BB:CC:DD:EE:FF" {
+		t.Errorf("mac = %v, want AA:BB:CC:DD:EE:FF", d["mac"])
+	}
+	if _, ok := d["offline_at_ms"]; !ok {
+		t.Errorf("offline_at_ms missing: %+v", d)
+	}
+}
+
+func TestDevicesOnlineEventEvictsFromOffline(t *testing.T) {
+	// Offline -> Online: device should move back to status="online".
+	w := argus.New(argus.WithFetcher(&argustest.FixedFetcher{}))
+	srv := argusweb.NewServer(w)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	dev := argus.Device{MAC: "aa:bb:cc:dd:ee:ff", IP: "10.0.0.9", Radio: "5G"}
+	srv.OnEvent(argus.Event{Time: time.Now(), Kind: argus.EventOffline, Device: dev})
+
+	before := fetchDevicesBody(t, ts)
+	if before.Offline != 1 {
+		t.Fatalf("before: offline=%d want 1", before.Offline)
+	}
+
+	// Online fires; our watcher's Known() still returns empty (no Fetcher
+	// data), but the offline cache should be evicted immediately.
+	srv.OnEvent(argus.Event{Time: time.Now(), Kind: argus.EventOnline, Device: dev})
+
+	after := fetchDevicesBody(t, ts)
+	if after.Offline != 0 {
+		t.Errorf("after: offline=%d want 0 (%+v)", after.Offline, after.Devices)
+	}
+}
+
+func TestDevicesOfflineRetentionTTL(t *testing.T) {
+	// With a very short TTL, an old offline entry should be dropped
+	// on the next /api/devices request.
+	w := argus.New(argus.WithFetcher(&argustest.FixedFetcher{}))
+	srv := argusweb.NewServer(w, argusweb.WithOfflineRetention(20*time.Millisecond))
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	srv.OnEvent(argus.Event{
+		Time:   time.Now(),
+		Kind:   argus.EventOffline,
+		Device: argus.Device{MAC: "aa:bb:cc:dd:ee:ff", IP: "10.0.0.9"},
+	})
+
+	if got := fetchDevicesBody(t, ts); got.Offline != 1 {
+		t.Fatalf("pre-TTL: offline=%d want 1", got.Offline)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	if got := fetchDevicesBody(t, ts); got.Offline != 0 {
+		t.Errorf("post-TTL: offline=%d want 0 (%+v)", got.Offline, got.Devices)
+	}
+}
+
+func TestDevicesOfflineCapEvictsOldest(t *testing.T) {
+	// With max=2, firing 3 Offline events should keep only the 2 newest.
+	w := argus.New(argus.WithFetcher(&argustest.FixedFetcher{}))
+	srv := argusweb.NewServer(w, argusweb.WithOfflineMax(2))
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	// Use offset timestamps within the TTL window so ordering is
+	// deterministic while still being "recent enough" to survive prune.
+	base := time.Now().Add(-3 * time.Second)
+	srv.OnEvent(argus.Event{Time: base.Add(-2 * time.Second), Kind: argus.EventOffline, Device: argus.Device{MAC: "aa:aa:aa:aa:aa:01"}})
+	srv.OnEvent(argus.Event{Time: base.Add(-1 * time.Second), Kind: argus.EventOffline, Device: argus.Device{MAC: "aa:aa:aa:aa:aa:02"}})
+	srv.OnEvent(argus.Event{Time: base, Kind: argus.EventOffline, Device: argus.Device{MAC: "aa:aa:aa:aa:aa:03"}})
+
+	body := fetchDevicesBody(t, ts)
+	if body.Offline != 2 {
+		t.Fatalf("offline=%d want 2 (%+v)", body.Offline, body.Devices)
+	}
+	for _, d := range body.Devices {
+		if d["mac"] == "AA:AA:AA:AA:AA:01" {
+			t.Errorf("oldest entry 01 should have been evicted; got %+v", body.Devices)
+		}
+	}
+}
+
+func TestDevicesChangeEventUpdatesOfflineCacheEntry(t *testing.T) {
+	// A Change event for a device currently in the offline cache should
+	// refresh its payload (e.g. DHCP renewed IP) without changing status.
+	w := argus.New(argus.WithFetcher(&argustest.FixedFetcher{}))
+	srv := argusweb.NewServer(w)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	srv.OnEvent(argus.Event{
+		Time:   time.Now(),
+		Kind:   argus.EventOffline,
+		Device: argus.Device{MAC: "aa:bb:cc:dd:ee:ff", IP: "10.0.0.9"},
+	})
+	srv.OnEvent(argus.Event{
+		Time:   time.Now(),
+		Kind:   argus.EventChange,
+		Device: argus.Device{MAC: "aa:bb:cc:dd:ee:ff", IP: "10.0.0.42"},
+	})
+
+	body := fetchDevicesBody(t, ts)
+	if body.Offline != 1 || len(body.Devices) != 1 {
+		t.Fatalf("offline=%d count=%d (%+v)", body.Offline, len(body.Devices), body.Devices)
+	}
+	if body.Devices[0]["ip"] != "10.0.0.42" {
+		t.Errorf("ip = %v, want 10.0.0.42 (Change didn't refresh offline entry)", body.Devices[0]["ip"])
+	}
+	if body.Devices[0]["status"] != "offline" {
+		t.Errorf("status = %v, want offline", body.Devices[0]["status"])
+	}
+}
+
+func TestDevicesStatusFieldAlwaysPresent(t *testing.T) {
+	// Every row must carry a status field, even when the offline cache
+	// is empty. Relied on by the dashboard for row styling.
+	w := argus.New(argus.WithFetcher(&argustest.FixedFetcher{}))
+	srv := argusweb.NewServer(w)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	srv.OnEvent(argus.Event{Time: time.Now(), Kind: argus.EventOffline, Device: argus.Device{MAC: "aa:bb:cc:dd:ee:ff"}})
+
+	body := fetchDevicesBody(t, ts)
+	for _, d := range body.Devices {
+		if _, ok := d["status"]; !ok {
+			t.Errorf("status missing on row %+v", d)
+		}
+	}
+}

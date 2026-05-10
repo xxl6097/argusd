@@ -17,6 +17,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.13.3] - 2026-05-10
+
+User request: dashboard device list should show an explicit
+online/offline status column AND keep offline devices visible
+instead of dropping them on disconnect.
+
+### Added · 新增
+
+- **Offline retention in `argusweb`** (opt-in, defaults on):
+  `argusweb.Server` now maintains an in-process offline cache fed
+  by SSE `EventOffline`/`EventOnline`/`EventChange` events. `/api/devices`
+  merges the Watcher's `Known()` (online) with the offline cache
+  (recently departed) into one list. Two new `Option`s:
+  - `argusweb.WithOfflineRetention(d time.Duration)` — TTL for
+    offline entries (default 7 days, zero disables retention)
+  - `argusweb.WithOfflineMax(n int)` — soft cap; oldest entry is
+    evicted when exceeded (default 512, zero disables the cap)
+
+  Library surface is untouched — this is a dashboard-layer
+  concern. `argus.Watcher.Known()` still means "currently online"
+  and is unchanged.
+
+- **`/api/devices` wire shape extension**:
+  - Top-level body gains `online: N` and `offline: N` counts
+  - Each row gains `status: "online" | "offline"` (mandatory) and
+    `offline_at_ms` (unix-ms, set when status is "offline")
+  - Rows are sorted online-first then alphabetically by MAC so the
+    active fleet is always on top
+  - Backward-compatible: existing fields are unchanged; the new
+    fields are additive
+
+- **Dashboard · Status column** (`argusweb/assets/dashboard.html`):
+  - New leftmost column shows a green "在线" pill for online
+    devices, a red "离线 N分钟前" pill for offline devices with a
+    compact relative-time suffix
+  - Offline rows are desaturated (55% opacity) so the eye is
+    drawn to the online set first
+  - Header count pill split into two: "在线 N" + "离线 N"
+  - Mobile cards reshuffle: MAC + status pill on row 1, host/IP
+    on row 2, link/radio + RSSI on row 3
+
+- **7 new regression tests** in `argusweb/server_test.go`:
+  - `TestDevicesOfflineEventRetainsDevice`
+  - `TestDevicesOnlineEventEvictsFromOffline`
+  - `TestDevicesOfflineRetentionTTL` — 20 ms TTL
+  - `TestDevicesOfflineCapEvictsOldest` — max=2 eviction
+  - `TestDevicesChangeEventUpdatesOfflineCacheEntry`
+  - `TestDevicesStatusFieldAlwaysPresent`
+
+---
+
 ## [0.13.2] - 2026-05-10
 
 Patch release. Fixes the "device keeps flashing online/offline on the
@@ -963,7 +1014,8 @@ Initial public release · 首次公开发布。
 Link references (kept at the bottom for readability).
 -->
 
-[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.13.2...HEAD
+[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.13.3...HEAD
+[0.13.3]: https://github.com/xxl6097/argusd/compare/v0.13.2...v0.13.3
 [0.13.2]: https://github.com/xxl6097/argusd/compare/v0.13.1...v0.13.2
 [0.13.1]: https://github.com/xxl6097/argusd/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/xxl6097/argusd/compare/v0.12.0...v0.13.0
