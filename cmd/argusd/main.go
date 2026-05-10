@@ -56,10 +56,22 @@ func main() {
 	signal.Notify(sighup, syscall.SIGHUP)
 	defer signal.Stop(sighup)
 
-	// SIGUSR1 触发指标快照打印
+	// SIGUSR1 触发指标快照打印 — 独立 goroutine, 不与 Run 生命周期耦合。
+	// 放在主 for-select 里会导致每次 SIGUSR1 都重入 for 循环, 开启第二个 Run,
+	// 第二个 Run 立刻拿到 ErrAlreadyRunning, 被 log.Fatalf 杀死进程。
 	sigusr1 := make(chan os.Signal, 1)
 	signal.Notify(sigusr1, syscall.SIGUSR1)
 	defer signal.Stop(sigusr1)
+	go func() {
+		for {
+			select {
+			case <-exitCtx.Done():
+				return
+			case <-sigusr1:
+				printMetricsSnapshot(metrics)
+			}
+		}
+	}()
 
 	w := owrt.New(
 		owrt.OnFetcherDetected(func(k owrt.FetcherKind) {
@@ -141,10 +153,6 @@ func main() {
 			log.Printf("[重启] 保留 %d 台已知设备, 冷却/抖动状态亦保留, 瞬态计数已重置", len(snap))
 			generation++
 			// 继续 for 循环, 开始下一轮 Run
-
-		case <-sigusr1:
-			// SIGUSR1: 打印当前指标快照, 不影响 Run
-			printMetricsSnapshot(metrics)
 		}
 	}
 }
