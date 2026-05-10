@@ -17,6 +17,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.12.0] - 2026-05-10
+
+Focus on **tracing + fuzz hardening**: opt-in distributed-tracing hook
+(adapter for OpenTelemetry / OpenTracing / Datadog in ~15 lines) plus
+fuzz targets for the two untrusted-text parsing surfaces.
+Non-breaking — zero observable cost when the span hook is unregistered.
+
+### Added · 新增
+
+- **Distributed tracing hook** (`span.go`):
+  - `SpanRecorder` interface — `Start(ctx, name) (ctx, finish func(error))`
+  - `SpanRecorderFunc` adapter (mirror of `http.HandlerFunc`)
+  - `WithSpanRecorder(r SpanRecorder) Option`
+  - Currently wired at two lifecycle points: `argus.Run` (top-level
+    span covering the baseline fetch + poll loop) and
+    `argus.handleDisconnectHint` (the multi-stage 500 ms wait +
+    ping + emit path — the only non-trivial logical trace in the
+    library)
+  - Panic isolation: recorder panics in both `Start` and `finish`
+    are recovered; tracing failures never kill the caller
+  - When unregistered (the default), every `startSpan` call site
+    returns a shared `noopFinish` — single nil check, zero
+    closure allocation
+  - OTel adapter is ~15 lines (see godoc on `SpanRecorder`)
+
+- **Fuzz targets** (`fuzz_test.go`):
+  - `FuzzParseSyslogLine` — the syslog line parser is an
+    untrusted-text surface (anything running on the router can emit
+    lines via `logger(1)`). 10 seeds drawn from real MT7981
+    samples. Ran 3 s locally at 18 K exec/s with no panics.
+  - `FuzzLoadDHCPLeases` — `/tmp/dhcp.leases` parser. 8 seeds
+    covering malformed whitespace, short rows, non-UTF-8. 3 s run
+    at 1.5 K exec/s with no panics.
+  - CI runs both for 5 s each on Go 1.25 (`.github/workflows/ci.yml`)
+    so regressions show up on PR before release.
+
+### Changed · 变更
+
+- `.github/workflows/ci.yml` — added `Fuzz smoke` step gated on
+  `matrix.go == '1.25'` (fuzz engine is more stable on the newest
+  toolchain).
+
+### Documentation
+
+- `STABILITY.md` Stable surface extended with `SpanRecorder` /
+  `SpanRecorderFunc` / `WithSpanRecorder`.
+
+---
+
 ## [0.11.0] - 2026-05-10
 
 Focus on **discoverability polish**: package-level godoc overview,
@@ -760,7 +809,8 @@ Initial public release · 首次公开发布。
 Link references (kept at the bottom for readability).
 -->
 
-[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/xxl6097/argusd/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/xxl6097/argusd/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/xxl6097/argusd/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/xxl6097/argusd/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/xxl6097/argusd/compare/v0.8.0...v0.9.0

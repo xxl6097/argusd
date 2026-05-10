@@ -312,6 +312,10 @@ type Watcher struct {
 	// logger 是可选的结构化日志钩子, 由 WithLogger 注入。nil 时所有 log 调用
 	// 通过 (*Watcher).log 快速返回 (单次 nil 检查)。
 	logger LoggerHandler
+
+	// spans 是可选的分布式追踪钩子, 由 WithSpanRecorder 注入。nil 时所有
+	// startSpan 调用通过单次 nil 检查快速返回, 且返回共享的 noopFinish。
+	spans SpanRecorder
 }
 
 // loadHints 优先使用 Watcher 注入的 HintSource, 回退到包级默认。
@@ -556,6 +560,10 @@ func (w *Watcher) Run(ctx context.Context, onEvent EventHandler, onError ErrorHa
 	if err := w.EnsureFetcher(ctx); err != nil {
 		return err // EnsureFetcher 已 wrap ErrNoFetcher
 	}
+	spanCtx, finishRun := w.startSpan(ctx, "argus.Run")
+	defer func() { finishRun(nil) }()
+	ctx = spanCtx
+
 	baseline, err := w.fetchByMAC(ctx)
 	if err != nil {
 		return fmt.Errorf("%w: baseline fetch: %v", ErrFetchFailed, err)
@@ -765,6 +773,9 @@ func (w *Watcher) runSyslogConsumer(ctx context.Context, onEvent EventHandler, o
 // 流程, 后续重复 hint 直接发 DISCONNECT_SKIP_INFLIGHT 决策返回, 节省 ~2 × 1.5s
 // 的 worker 时间和一次冗余 ping。
 func (w *Watcher) handleDisconnectHint(ctx context.Context, mac string, onEvent EventHandler, onError ErrorHandler) {
+	ctx, finish := w.startSpan(ctx, "argus.handleDisconnectHint")
+	defer finish(nil)
+
 	w.emitDecision(DecisionDisconnectHintReceived, mac, "")
 
 	w.stateMu.Lock()

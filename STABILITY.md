@@ -20,6 +20,7 @@ Types and functions used by **library consumers** — these must be preserved ac
 - `Watcher` — method signatures
 - `Option`, `EventHandler`, `ErrorHandler`, `DecisionHandler`
 - `LoggerHandler`, `LogLevel`, `LogAttr` — structured logging hook (since v0.9.0)
+- `SpanRecorder`, `SpanRecorderFunc` — distributed-tracing hook (since v0.12.0)
 - `Hint` — single MAC's `{IP, Hostname}` enrichment payload
 - `HintSource` interface — injectable enrichment source (see `WithHintSource`)
 - `DefaultHintSource` — struct with configurable `LeasesPath` / `ARPCommand` / `CacheTTL`

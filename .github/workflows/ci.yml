@@ -32,6 +32,11 @@ jobs:
       - name: Benchmarks (zero-cost DecisionHandler guard)
         if: matrix.go == '1.25'
         run: go test -bench=BenchmarkEmitDecisionNil -benchmem -run=^$ -count=1 ./...
+      - name: Fuzz smoke (5s each, latest Go only)
+        if: matrix.go == '1.25'
+        run: |
+          go test -run=^$ -fuzz=FuzzParseSyslogLine -fuzztime=5s .
+          go test -run=^$ -fuzz=FuzzLoadDHCPLeases -fuzztime=5s .
 
   cross-compile:
     name: Cross-compile ${{ matrix.name }}
