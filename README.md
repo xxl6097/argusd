@@ -18,13 +18,14 @@
 
 1. [特性 · Features](#特性--features)
 2. [快速开始 · Quick Start](#快速开始--quick-start)
-3. [架构 · Architecture](#架构--architecture)
-4. [API 速查 · API Overview](#api-速查--api-overview)
-5. [配置调优 · Configuration](#配置调优--configuration)
-6. [可观测性 · Observability](#可观测性--observability)
-7. [路线图 · Roadmap](#路线图--roadmap)
-8. [兼容性 · Compatibility](#兼容性--compatibility)
-9. [贡献 · Contributing](#贡献--contributing)
+3. [Web UI · 内置仪表盘](#web-ui--内置仪表盘-v0130)
+4. [架构 · Architecture](#架构--architecture)
+5. [API 速查 · API Overview](#api-速查--api-overview)
+6. [配置调优 · Configuration](#配置调优--configuration)
+7. [可观测性 · Observability](#可观测性--observability)
+8. [路线图 · Roadmap](#路线图--roadmap)
+9. [兼容性 · Compatibility](#兼容性--compatibility)
+10. [贡献 · Contributing](#贡献--contributing)
 
 ---
 
@@ -184,6 +185,86 @@ BA:79:97:73:89:8D    192.168.1.213    BA799773898D      -        Phone   -44(极
 [2026-05-09 18:42:03] [syslog/系统日志] DHCP_ACK        BA:79:... IP=192.168.1.213
 [2026-05-09 18:42:03] [event/事件]   ONLINE / 上线      BA:79:... 192.168.1.213 iPhone -44(极强) 5G/avgb-5G
 ```
+
+---
+
+## Web UI · 内置仪表盘 (v0.13.0+)
+
+**EN** — Argus ships an opt-in, zero-dependency HTTP + Server-Sent-Events dashboard in the `argusweb` subpackage. Single embedded HTML file, vanilla JS, mobile-responsive, Chinese-only labels (v0.15.1). Pass `-listen :8080` to `argusd`, or wire `argusweb.NewServer` into your own `http.Handler` tree.
+
+**中文** — Argus 在 `argusweb` 子包内置了零依赖的 HTTP + SSE 仪表盘:单一嵌入式 HTML、原生 JS、移动端自适应、纯中文界面 (v0.15.1)。`argusd` 加 `-listen :8080` 即可启动,或在你自己的 HTTP 服务中挂载 `argusweb.NewServer`。
+
+### 功能 · Features
+
+| 功能 · Feature | 说明 · Description | 版本 · Since |
+|---|---|---|
+| 实时设备表 · Live device table | **EN** SSE-driven; MAC / IP / 主机名 / 品牌 / 类型 / 信号 / 无线 / 状态 columns · **中文** SSE 推送,8 列实时刷新 | v0.13.0 |
+| 在线/离线状态 · Online/Offline column | **EN** Offline rows retained per `WithOfflineRetention` (default 7d / 512 entries) · **中文** 离线设备保留可配置,默认 7 天 / 512 条 | v0.13.3 |
+| 移动端自适应 · Mobile responsive | **EN** Card layout below 640px breakpoint · **中文** 640px 以下自动切换卡片布局 | v0.13.1 |
+| 防抖动 · Reconnect coalescing | **EN** OFFLINE→ONLINE bursts within 10s collapse into one RECONNECT row · **中文** 10 秒内的 OFFLINE→ONLINE 抖动合并为一次 RECONNECT | v0.13.2 |
+| 品牌列 · Vendor column | **EN** OUI lookup, ellipsis + tooltip for long names · **中文** OUI 品牌查询,超长省略号显示并悬停提示 | v0.15.0 |
+| 设备别名 · Aliases (renamable) | **EN** 点击 ✎ inline-rename · file-backed JSON, atomic writes · **中文** ✎ 行内重命名,JSON 持久化、原子写 | v0.14.0 |
+| 静态 IP 预留 · Static DHCP reservations | **EN** 📌 button → modal; UCI-backed; 立即生效 (reload + lease prune + station kick) · **中文** 📌 按钮弹窗预约,UCI 持久化,立即生效 | v0.15.0 |
+| IP 冲突保护 · IP conflict guard | **EN** Refuses POST with 409 if target IP is already bound to a different MAC; surfaces owner MAC in UI · **中文** 目标 IP 已被其他 MAC 占用时返回 409,UI 提示冲突方 | v0.15.3 |
+| 一键修复 · Recovery endpoint | **EN** `POST /api/dhcp?purge_argus=1` removes every `dhcp.argus_*` section · **中文** 一键清除所有 `dhcp.argus_*` 段,用于配置被污染时恢复 | v0.15.3 |
+| 写操作鉴权 · Write auth | **EN** `WithWriteAuth(predicate)` gates POST/DELETE; default allows loopback + RFC1918 · **中文** 默认仅放行环回与内网,可自定义 | v0.14.0 |
+
+### 启动 · Running
+
+```bash
+# CLI: bind on all interfaces, port 8080
+./argusd -listen :8080 \
+         -aliases /etc/argusd/aliases.json   # 可选: 启用别名存储
+# 浏览器访问 http://<router-ip>:8080/
+```
+
+或在 Go 代码里挂载 · Or mount in your own server:
+
+```go
+w := argus.New(argus.WithFetcher(...))
+
+aliases := argusweb.NewAliasStore("/etc/argusd/aliases.json")
+dhcp, _ := argusweb.NewUCIDHCPManager() // 非 OpenWrt 主机返回 ErrDHCPManagerUnavailable
+
+srv := argusweb.NewServer(w,
+    argusweb.WithAliases(aliases),
+    argusweb.WithDHCPManager(dhcp),
+    argusweb.WithOfflineRetention(7*24*time.Hour),
+    argusweb.WithOfflineMax(512),
+    argusweb.WithWriteAuth(func(r *http.Request) bool {
+        // 自定义鉴权 · custom auth predicate
+        return r.Header.Get("X-Token") == os.Getenv("ARGUS_TOKEN")
+    }),
+)
+w.RegisterEventHandler(srv.OnEvent) // 让 SSE 流转发事件
+go http.ListenAndServe(":8080", srv)
+```
+
+### HTTP API
+
+所有响应均为 JSON,写操作受 `WithWriteAuth` 控制(默认环回 + RFC1918 放行,其它返回 403)。
+
+| 路由 · Route | 方法 | 说明 |
+|---|---|---|
+| `/` | GET | 仪表盘 HTML(单文件嵌入) |
+| `/api/devices` | GET | `{count, online, offline, capabilities:{aliases,dhcp}, devices:[...]}`;每行含 `status` / `offline_at_ms` / `alias` |
+| `/api/events` | GET | SSE 流,事件名 = `EventKind.String()`(`ONLINE` / `OFFLINE` / `CHANGE`) |
+| `/api/aliases` | GET / POST / DELETE | MAC ↔ 友好名 CRUD;`503` 表示未挂 `WithAliases` |
+| `/api/dhcp` | GET / POST / DELETE | 静态 DHCP 预留 CRUD;`503` 表示未挂 `WithDHCPManager` |
+| `/api/dhcp?purge_argus=1` | POST | 一键清除全部 `dhcp.argus_*` 段(恢复工具,v0.15.3+) |
+
+POST `/api/dhcp` 错误码:
+
+- `400` — MAC / IP / name 非法
+- `403` — 写操作鉴权未通过
+- `409` — 目标 IP 已被其它 MAC 预留;body `{error, ip, owner_mac}` 指明冲突方 (v0.15.3+)
+- `503` — 服务未挂载 DHCPManager
+
+完整 wire shape 见 [`STABILITY.md`](./STABILITY.md#stable-public-surface-稳定-api--不会破坏)(自 v0.13.0 起为稳定 API 表面)。
+
+### 兼容性 · DHCP backend compatibility
+
+`NewUCIDHCPManager()` 仅在 OpenWrt(任何带 `uci` CLI 的系统)上可用;其它平台返回 `ErrDHCPManagerUnavailable`。已在 MediaTek MT7981 / C-Life 厂商固件(odhcpd)与官方 OpenWrt(dnsmasq)上验证。
 
 ---
 

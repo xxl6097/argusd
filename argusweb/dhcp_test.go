@@ -144,13 +144,17 @@ func TestValidateIPv4(t *testing.T) {
 }
 
 func TestValidateName(t *testing.T) {
-	good := []string{"", "device", "my-phone", "server_01", strings.Repeat("a", 63)}
+	good := []string{
+		"", "device", "my-phone", "server_01",
+		"has space", "uuxia的iPhone", "客厅·音箱", "192.168.x",
+		strings.Repeat("a", 63),
+	}
 	for _, s := range good {
 		if _, err := validateName(s); err != nil {
 			t.Errorf("name %q rejected: %v", s, err)
 		}
 	}
-	bad := []string{strings.Repeat("a", 64), "has space", "shell$(pwd)", "back`tick`", "semi;colon"}
+	bad := []string{strings.Repeat("a", 64), "shell$(pwd)", "back`tick`", "semi;colon", "pipe|cmd", "and&cmd", "quote'x", "redir>x"}
 	for _, s := range bad {
 		if _, err := validateName(s); err == nil {
 			t.Errorf("name %q incorrectly accepted (would allow injection)", s)

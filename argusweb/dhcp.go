@@ -152,8 +152,13 @@ func NewUCIDHCPManager() (*UCIDHCPManager, error) {
 // --- Input validation (defense against shell / uci injection) ----------
 
 var (
-	reMAC  = regexp.MustCompile(`^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$`)
-	reName = regexp.MustCompile(`^[A-Za-z0-9_-]{0,63}$`)
+	reMAC = regexp.MustCompile(`^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$`)
+
+	// forbiddenNameChars rejects shell / uci metachars so a name can't
+	// escape the `uci set key=value` argument or the stored
+	// /etc/config/dhcp value. Everything else (Chinese, spaces, dots,
+	// etc.) is allowed. See validateName for the full contract.
+	forbiddenNameChars = "'\"\\`$;|&<>\x00\n\r\t"
 )
 
 func validateMAC(mac string) (string, error) {
@@ -173,10 +178,26 @@ func validateIPv4(s string) (string, error) {
 	return ip.String(), nil
 }
 
+// validateName accepts the widest safe set of characters for a DHCP
+// host name: any UTF-8 codepoint (including Chinese), ASCII
+// letters/digits, spaces, and common punctuation — with hard bans on
+// shell / uci metacharacters that could escape the `uci set` argument
+// or corrupt /etc/config/dhcp. Length capped at 63 bytes so we stay
+// below dnsmasq's 64-byte cap for DHCP host names.
+//
+// Returns the trimmed name (empty is OK and handled by the caller).
 func validateName(n string) (string, error) {
 	n = strings.TrimSpace(n)
-	if !reName.MatchString(n) {
-		return "", fmt.Errorf("invalid name %q (allowed: A-Z a-z 0-9 _ -, up to 63 chars)", n)
+	if len(n) > 63 {
+		return "", fmt.Errorf("name too long (%d bytes > 63)", len(n))
+	}
+	for _, r := range n {
+		if r < 0x20 {
+			return "", fmt.Errorf("invalid name %q (control characters not allowed)", n)
+		}
+		if strings.ContainsRune(forbiddenNameChars, r) {
+			return "", fmt.Errorf("invalid name %q (contains disallowed character %q)", n, r)
+		}
 	}
 	return n, nil
 }
