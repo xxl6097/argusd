@@ -194,20 +194,78 @@ BA:79:97:73:89:8D    192.168.1.213    BA799773898D      -        Phone   -44(极
 
 **中文** — Argus 在 `argusweb` 子包内置了零依赖的 HTTP + SSE 仪表盘:单一嵌入式 HTML、原生 JS、移动端自适应、纯中文界面 (v0.15.1)。`argusd` 加 `-listen :8080` 即可启动,或在你自己的 HTTP 服务中挂载 `argusweb.NewServer`。
 
+### 界面概览 · Screens
+
+**桌面端布局** — 左侧设备表,右侧事件流;右上角是连接状态和系统按钮。
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  Argus  设备监控           [● 已连接]  [在线 4]  [离线 2]  [重启网络][重启路由器]│
+├──────────────────────────────────────────┬───────────────────────────────────┤
+│  已知设备                                  │  实时事件流        SSE /api/events │
+│  状态  MAC                IP        主机名 ✎ 厂商     信号       类型            │
+│ ─────────────────────────────────────── │ ─────────────────────────────────── │
+│ [在线] 2C:CF:67:1D:27:AC  🔒 192.168.1.11📌 iStoreOS ✎  Raspberry  ---  wired  │  14:08:02 [上线]  EE:6A:BF:...   │
+│ [在线] 82:F8:8D:FB:B6:A6  🔒 192.168.1.2 📌 iphone17 ✎  Apple     -35  5G/avgb │  14:07:51 [变更]  82:F8:8D:... IP "—"→"192.168.1.2" │
+│ [在线] B0:FC:36:32:94:61      192.168.1.5📌  lenovo  ✎  DESKTOP   -35  5G/avgb │  14:07:48 [重连]  82:F8:8D:...   │
+│ [离线 2m] EE:6A:BF:2E:87:DF  192.168.1.121📌  —     ✎   *         -46  5G/avgb │  14:07:36 [离线]  B0:FC:36:...   │
+└──────────────────────────────────────────┴───────────────────────────────────┘
+```
+
+**静态 IP 弹窗** — 点 📌 进入,支持直接指定 IP、填名称、勾选"立即生效"。
+
+```
+┌───────────────────────────────────────┐
+│  静态 IP                               │
+│  MAC: BA:79:97:73:89:8D               │
+│ ┌───────────────────────────────────┐ │
+│ │ IP 地址                            │ │
+│ │ [192.168.1.2              ]       │ │
+│ ├───────────────────────────────────┤ │
+│ │ 名称(可选)                        │ │
+│ │ [iphone17                 ]       │ │
+│ ├───────────────────────────────────┤ │
+│ │ ⚠ [ ] 立即生效 (重启 WiFi)        │ │
+│ │     勾选后 wifi reload / 重启     │ │
+│ │     ahsapd, 全部设备瞬断 3~5 秒    │ │
+│ │     后自动重连, 新 IP 立刻生效     │ │
+│ └───────────────────────────────────┘ │
+│  保存后网关会重载 dnsmasq              │
+│                                       │
+│          [取消]  [保存 ★]             │
+└───────────────────────────────────────┘
+```
+
+**移动端 (宽度 ≤ 640px)** — 自动切卡片布局,每台设备一张卡,手指友好。
+
 ### 功能 · Features
 
 | 功能 · Feature | 说明 · Description | 版本 · Since |
 |---|---|---|
 | 实时设备表 · Live device table | **EN** SSE-driven; MAC / IP / 主机名 / 品牌 / 类型 / 信号 / 无线 / 状态 columns · **中文** SSE 推送,8 列实时刷新 | v0.13.0 |
-| 在线/离线状态 · Online/Offline column | **EN** Offline rows retained per `WithOfflineRetention` (default 7d / 512 entries) · **中文** 离线设备保留可配置,默认 7 天 / 512 条 | v0.13.3 |
+| 在线/离线状态 · Online/Offline column | **EN** Offline rows retained per `WithOfflineRetention` (default 7d / 512 entries); 相对时间"2m ago" · **中文** 离线设备保留可配置,默认 7 天 / 512 条;离线后以"X 分钟前"相对时间显示 | v0.13.3 |
 | 移动端自适应 · Mobile responsive | **EN** Card layout below 640px breakpoint · **中文** 640px 以下自动切换卡片布局 | v0.13.1 |
+| 响应式列宽 · Adaptive columns | **EN** `table-layout:auto` with per-column min-widths; columns expand to full content when screen is wide, truncate with ellipsis + hover tooltip only when cramped · **中文** 屏幕够宽时列自动撑满,窄屏才按最小宽度截断并保留 hover tooltip | v0.15.5 |
 | 防抖动 · Reconnect coalescing | **EN** OFFLINE→ONLINE bursts within 10s collapse into one RECONNECT row · **中文** 10 秒内的 OFFLINE→ONLINE 抖动合并为一次 RECONNECT | v0.13.2 |
 | 品牌列 · Vendor column | **EN** OUI lookup, ellipsis + tooltip for long names · **中文** OUI 品牌查询,超长省略号显示并悬停提示 | v0.15.0 |
-| 设备别名 · Aliases (renamable) | **EN** 点击 ✎ inline-rename · file-backed JSON, atomic writes · **中文** ✎ 行内重命名,JSON 持久化、原子写 | v0.14.0 |
-| 静态 IP 预留 · Static DHCP reservations | **EN** 📌 button → modal; UCI-backed; 立即生效 (reload + lease prune + station kick) · **中文** 📌 按钮弹窗预约,UCI 持久化,立即生效 | v0.15.0 |
-| IP 冲突保护 · IP conflict guard | **EN** Refuses POST with 409 if target IP is already bound to a different MAC; surfaces owner MAC in UI · **中文** 目标 IP 已被其他 MAC 占用时返回 409,UI 提示冲突方 | v0.15.3 |
+| 设备别名 · Aliases (renamable) | **EN** ✎ inline-rename button · UTF-8 (Chinese / spaces / dots all accepted) · file-backed JSON, atomic writes · **中文** ✎ 行内重命名,允许中文/空格/点号,JSON 持久化、原子写 | v0.14.0 / v0.15.4 |
+| 静态 IP 预留 · Static DHCP reservations | **EN** 📌 button → modal; UCI-backed; optional immediate-apply (reload + lease prune + ARP flush + station kick) · **中文** 📌 按钮弹窗预约,UCI 持久化,可选"立即生效"执行配置重载 + 租约清理 + ARP 清理 + 踢设备 | v0.15.0 / v0.15.2 / v0.15.7 |
+| IP 冲突保护 · IP conflict guard | **EN** 409 Conflict if target IP already bound to a different MAC; UI offers 1-click "replace" (delete old, then retry) · **中文** 目标 IP 已占用时返回 409,UI 提供一键"替换"(先删旧再改) | v0.15.3 / v0.15.5 |
 | 一键修复 · Recovery endpoint | **EN** `POST /api/dhcp?purge_argus=1` removes every `dhcp.argus_*` section · **中文** 一键清除所有 `dhcp.argus_*` 段,用于配置被污染时恢复 | v0.15.3 |
-| 写操作鉴权 · Write auth | **EN** `WithWriteAuth(predicate)` gates POST/DELETE; default allows loopback + RFC1918 · **中文** 默认仅放行环回与内网,可自定义 | v0.14.0 |
+| 立即生效(可选) · Opt-in WiFi restart | **EN** Save-dialog checkbox runs `wifi reload` / `ahsapd restart` so every client re-associates within seconds — nuclear option for firmwares where per-station kick is a no-op · **中文** 弹窗里勾选后执行 `wifi reload` / 重启 ahsapd,所有客户端秒级重连;用于厂商固件不支持单机踢的场景 | v0.15.8 |
+| 系统按钮 · System actions | **EN** Header "重启网络" (soft, 5-15s LAN blip, config preserved) and "重启路由器" (hard, 30-60s full reboot) buttons, each with confirmation prompts · **中文** 右上角 "重启网络"(软重启,5-15 秒 LAN 瞬断,配置保留)和 "重启路由器"(硬重启,30-60 秒全断)两个按钮,各自带确认对话框 | v0.15.9 |
+| 写操作鉴权 · Write auth | **EN** `WithWriteAuth(predicate)` gates every POST/DELETE (aliases / dhcp / system); default allows loopback + RFC1918 · **中文** 默认仅放行环回与内网,可自定义;覆盖所有写操作(别名 / DHCP / 系统) | v0.14.0 |
+
+### UI 细节 · UI details
+
+- **状态徽章** · 连接状态(`已连接` / `重连中…`)、在线/离线计数常驻右上角。
+- **🔒 图标** · 已配置静态 IP 的设备 IP 前显示锁符,hover 文字 "已静态分配"。
+- **📌 按钮** · 点开静态 IP 弹窗;若该 MAC 已预留,底部会多出红色"移除"按钮。
+- **✎ 按钮** · 点击进入行内重命名表单,回车保存,Esc 取消,空字符串即清除别名。
+- **事件徽章颜色** · `上线`/`重连` 绿色、`离线`/`抖动` 红色、`变更` 黄色。
+- **长文本 hover** · 任何列被 ellipsis 截断后,鼠标悬停显示完整内容。
+- **Toast 反馈** · 保存静态 IP 后底部弹出多行状态条:`已重载 / 已清除旧租约 / 已清除 ARP 缓存 / 已踢出 / 已重启 WiFi`,一眼看懂服务端到底做了什么。
+- **离线设备仍可管理** · 离线条目半透明显示,但 ✎ / 📌 按钮仍可点,可以提前为不在线的设备设置别名和静态 IP。
 
 ### 启动 · Running
 
@@ -250,8 +308,10 @@ go http.ListenAndServe(":8080", srv)
 | `/api/devices` | GET | `{count, online, offline, capabilities:{aliases,dhcp}, devices:[...]}`;每行含 `status` / `offline_at_ms` / `alias` |
 | `/api/events` | GET | SSE 流,事件名 = `EventKind.String()`(`ONLINE` / `OFFLINE` / `CHANGE`) |
 | `/api/aliases` | GET / POST / DELETE | MAC ↔ 友好名 CRUD;`503` 表示未挂 `WithAliases` |
-| `/api/dhcp` | GET / POST / DELETE | 静态 DHCP 预留 CRUD;`503` 表示未挂 `WithDHCPManager` |
+| `/api/dhcp` | GET / POST / DELETE | 静态 DHCP 预留 CRUD;`503` 表示未挂 `WithDHCPManager`;POST/DELETE 支持 `?restart_wifi=1` 触发"立即生效"(v0.15.8+) |
 | `/api/dhcp?purge_argus=1` | POST | 一键清除全部 `dhcp.argus_*` 段(恢复工具,v0.15.3+) |
+| `/api/system/restart-network` | POST | `/etc/init.d/network restart` 软重启网络服务(v0.15.9+) |
+| `/api/system/reboot` | POST | `/sbin/reboot` 彻底重启路由器(v0.15.9+) |
 
 POST `/api/dhcp` 错误码:
 
@@ -260,11 +320,16 @@ POST `/api/dhcp` 错误码:
 - `409` — 目标 IP 已被其它 MAC 预留;body `{error, ip, owner_mac}` 指明冲突方 (v0.15.3+)
 - `503` — 服务未挂载 DHCPManager
 
+`applyReport`(所有 DHCP 写操作响应 `apply` 字段)包含的状态:
+`reloaded[]` · `pruned[]` · `arp_flushed` · `kicked` · `wifi_restarted`,前端据此渲染 toast。
+
 完整 wire shape 见 [`STABILITY.md`](./STABILITY.md#stable-public-surface-稳定-api--不会破坏)(自 v0.13.0 起为稳定 API 表面)。
 
 ### 兼容性 · DHCP backend compatibility
 
 `NewUCIDHCPManager()` 仅在 OpenWrt(任何带 `uci` CLI 的系统)上可用;其它平台返回 `ErrDHCPManagerUnavailable`。已在 MediaTek MT7981 / C-Life 厂商固件(odhcpd)与官方 OpenWrt(dnsmasq)上验证。
+
+> **注意双 DHCP 服务器** · 如果 LAN 里有"旁路由"(iStoreOS / OpenClash 等)默认开启 DHCP,会和主路由抢答,导致设备网关随机变成旁路由 IP、静态预留间歇失效。排查:主路由上 `ip neigh` 看各设备网关;修复:在旁路由上 `uci set dhcp.lan.ignore=1 && uci commit dhcp && /etc/init.d/dnsmasq restart`。
 
 ---
 
