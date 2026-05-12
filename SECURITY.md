@@ -4,12 +4,14 @@
 
 | Version | Status | Security fixes |
 |---|---|---|
-| 0.7.x | ✅ active | yes |
-| 0.8.x | ✅ active (current) | yes |
-| ≤ 0.6.x | 🔴 end-of-life | no — upgrade to 0.8.x |
+| 1.0.x | ✅ active (current) | yes |
+| 0.15.x | ✅ active (prior line, supported through 2026-11-12) | yes |
+| ≤ 0.14.x | 🔴 end-of-life — upgrade to 1.0.x or 0.15.x | no |
 
-Once Argus reaches v1.0, the N-1 minor line continues to receive security
-fixes for 6 months after the next minor ships.
+The 1.x line is the stable support target going forward. The preceding
+0.15.x line continues to receive security fixes for 6 months after v1.0
+(through 2026-11-12) so consumers who can't re-vendor immediately have
+a runway. Pre-v1.0 releases outside 0.15.x are end-of-life.
 
 ## Reporting a vulnerability
 

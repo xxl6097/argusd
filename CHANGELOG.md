@@ -17,6 +17,235 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.0] - 2026-05-12
+
+**Milestone release — Stable public surface locked under SemVer v1 rules.**
+
+All v1.0 criteria in [`STABILITY.md`](./STABILITY.md) have been satisfied and
+soak-tested across v0.3 → v0.15.9 (twelve+ releases, no breaking change to the
+Stable surface). v1.0.0 bundles the whole v0.15.x arc into one milestone tag
+and opens the official 1.x line.
+
+**Post-v1.0 policy**: breaking changes to the Stable surface require a `v2`
+module path (`github.com/xxl6097/argusd/v2`). Additions (new exported
+symbols, new `Config` fields with zero-value-preserves-default, new
+`EventKind` / `DecisionKind` constants) continue to ship as minor bumps.
+
+### Cumulative highlights (v0.15.4 → v0.15.9)
+
+- **UTF-8 device aliases** — Chinese / spaces / dots accepted, only shell
+  metachars banned. Prior regex was whitelist-only and rejected
+  "uuxia的iPhone" style names. (v0.15.4)
+- **Responsive dashboard layout** — `table-layout:auto` + per-column
+  min-widths; columns expand to full content when there's room, truncate
+  with ellipsis + hover tooltip only when cramped. 📌 / ✎ buttons stay
+  visible at all widths. (v0.15.5 / v0.15.6)
+- **IP-conflict one-click replace** — When target IP already belongs to a
+  different MAC, the 409 dialog offers a one-click "replace": DELETE old
+  reservation, retry POST, atomic from the user's perspective. (v0.15.5)
+- **iOS static-IP fix stack** — `dismissTime` 2→30s + ARP cache flush via
+  `ip neigh del`. iOS no longer holds a cached lease across reassoc.
+  applyReport gained `arp_flushed` field. See
+  [`docs/blog/ios-static-ip.md`](./docs/blog/ios-static-ip.md). (v0.15.7)
+- **Opt-in WiFi restart** — When per-station kick silently no-ops on vendor
+  firmwares (MTK C-Life and similar), a save-dialog checkbox runs
+  `wifi reload` / `/etc/init.d/ahsapd restart` so every client re-associates
+  within seconds. applyReport gained `wifi_restarted` field. (v0.15.8)
+- **System endpoints** — `POST /api/system/restart-network` (soft: 5-15s
+  LAN blip, config preserved) and `POST /api/system/reboot` (hard: 30-60s
+  full reboot). Both behind `WithWriteAuth`, both surfaced in the
+  dashboard header with confirmation prompts. (v0.15.9)
+
+### Added · 新增
+
+- Support-question issue template (third form in `.github/ISSUE_TEMPLATE/`)
+  with ubus-list / router-model / DHCP-daemon prompts; first-time
+  contributor checkbox.
+- `scripts/build-all.sh` — mirrors CI matrix for local multi-arch builds
+  (amd64/386/arm64/armv5/armv7/mips/mipsle/mips64/mips64le/riscv64).
+- `docs/blog/ios-static-ip.md` — debugging story covering the three
+  independent ways "set static IP" can silently fail on iOS + OpenWrt,
+  with real logread/tcpdump/ip-neigh excerpts and fix commands.
+- README "界面概览 · Screens" section with 5 real dashboard screenshots.
+
+### Changed · 变更
+
+- README tagline rewritten to be SEO-friendly and single-line:
+  "Real-time OpenWrt device presence & static-IP dashboard — multi-source
+  fusion, sub-second events, zero-dep Web UI".
+- README hero image (`docs/images/dashboard-desktop.png`) moved above the
+  fold so first-screen visitors see the actual UI.
+- Badges consolidated: Go Reference + Go Report Card + Go version +
+  License + Tests + Release (sort=semver).
+
+### Migration notes
+
+No code changes required from v0.7.0 onward — the Stable surface has been
+frozen since then. `go get -u github.com/xxl6097/argusd@v1.0.0` and
+rebuild. See [`MIGRATION.md`](./MIGRATION.md) for per-release upgrade
+notes.
+
+---
+
+## [0.15.9] - 2026-05-12
+
+### Added · 新增
+
+- `POST /api/system/reboot` — auth-gated handler that schedules
+  `/sbin/reboot` in a detached goroutine after a 500 ms delay so the HTTP
+  response has time to flush. Dashboard header button "重启路由器" (red,
+  two-step confirmation). Toast: "已下发重启指令, 路由器将在约 30-60 秒
+  后恢复, 恢复后手动刷新本页面"。
+- `POST /api/system/restart-network` — auth-gated handler that runs
+  `/etc/init.d/network restart` in a detached goroutine (20 s ceiling).
+  Dashboard header button "重启网络" (neutral, single confirmation).
+  Toast: "已下发重启网络指令, 约 5-15 秒后恢复, SSE 会自动重连"。
+- `argusweb/system.go` — new file containing both handlers; binaries
+  discovered via `exec.LookPath`, returns 503 if unavailable.
+- `.hdr-btn` / `.hdr-btn.hdr-danger` CSS classes in `dashboard.html`,
+  style matched to existing pill design.
+
+### Fixed · 修复
+
+- Gives users an explicit escape hatch when per-station kick and opt-in
+  `wifi reload` are both insufficient (very rare, but observed): a single
+  click on "重启网络" forces every client through full DHCP re-negotiation
+  without waiting 12 h for lease expiry.
+
+### Scope
+
+Pure addition. Existing `/api/aliases`, `/api/dhcp` handlers and
+`applyReport` JSON shape unchanged; old clients unaffected.
+
+---
+
+## [0.15.8] - 2026-05-12
+
+### Added · 新增
+
+- Opt-in WiFi restart in the static-IP save dialog. Checkbox "立即生效
+  (重启 WiFi)" attaches `?restart_wifi=1` to `POST /api/dhcp` and
+  `DELETE /api/dhcp`; server runs `wifi reload` or `/etc/init.d/ahsapd
+  restart` (first that succeeds) after the UCI commit. All WiFi clients
+  drop for 3-5 s and auto-reassociate, which forces every device through
+  fresh DHCP so the new reservation takes effect immediately.
+- `applyReport.WiFiRestarted` JSON field (`omitempty`) exposes the
+  command that actually ran.
+- Toast message "已重启 WiFi (..), 全部设备将在数秒内重连并拿到新 IP"
+  when the checkbox was honored.
+
+### Changed · 变更
+
+- `applyDHCPChanges(ctx, mac)` → `applyDHCPChanges(ctx, mac, restartWiFi)`.
+  Only called from two handlers inside the package, so not a breaking
+  change to any exported surface.
+
+### Rationale
+
+On MediaTek C-Life vendor firmware, `ubus call ahsapd.roaming
+staDisconnect` returns exit 0 but produces no `Del Sta` / `Deauth` kernel
+event — the method appears to be a no-op in single-AP deployments. Users
+needed a reliable fallback that didn't require them to manually toggle
+WiFi on every affected device; the "nuclear" checkbox gives them one.
+
+---
+
+## [0.15.7] - 2026-05-12
+
+### Added · 新增
+
+- `applyDHCPChanges` step 3 (new): `ip neigh del <oldIP> dev <iface>` to
+  flush stale ARP entries for the target MAC before kicking the station.
+  Without this, iOS in particular re-advertises its cached IP via ARP
+  after reassoc and the router happily confirms it, letting iOS ignore
+  the DHCPNAK and keep using the old address.
+- `applyReport.ARPFlushed` JSON field (`omitempty`) — old IP whose ARP
+  entry we deleted. Surfaced in the dashboard toast.
+- `flushARPForMAC` helper reads `/proc/net/arp`, matches lowercase MAC,
+  deletes every matching entry. Best-effort; errors swallowed.
+
+### Changed · 变更
+
+- `ahsapd.roaming staDisconnect` `dismissTime` raised from 2 to 30
+  seconds. Empirically, iOS's DHCP client doesn't tear down its cached
+  lease state within 2 s — it reconnects still in RENEWING state and
+  re-requests the old IP. 30 s reliably forces a full release + fresh
+  DISCOVER on iOS and Android.
+
+### Rationale
+
+User reported "static IP doesn't take effect on iPhone". Reproducer
+showed dnsmasq correctly NAK'd the old IP and offered the new one, but
+iOS re-requested the old IP with a wrong-server-ID and kept it. Root
+cause was iOS aggressive DHCP state caching + router ARP confirmation of
+the old mapping. See [`docs/blog/ios-static-ip.md`](./docs/blog/ios-static-ip.md)
+for the full debugging writeup.
+
+---
+
+## [0.15.6] - 2026-05-12
+
+### Fixed · 修复
+
+- 📌 static-IP button position: switched `.ip-text` from `flex: 1 1 auto`
+  to `flex: 0 1 auto` and added `margin-right: auto` on `.staticip-btn`.
+  Button now hugs the IP text instead of being pushed to the far edge of
+  the cell; still preserves ellipsis truncation when IP text overflows.
+
+Scope: CSS only, no behavior change.
+
+---
+
+## [0.15.5] - 2026-05-12
+
+### Added · 新增
+
+- **IP-conflict replace prompt.** When `POST /api/dhcp` returns 409, the
+  frontend now shows a confirm dialog naming the conflicting owner MAC.
+  User clicks "确定" → dashboard auto-runs
+  `DELETE /api/dhcp?mac=<owner>` then retries the original POST; "取消"
+  leaves both reservations untouched. Toast on success: "已替换"。
+- **Responsive table layout.** `table-layout: fixed` → `auto`, with each
+  `<col>` given a `min-width` and select columns (status / MAC / RSSI /
+  link) additionally given `width: 1%` to collapse to content. Result:
+  on a wide screen every column displays full content; on narrow
+  screens only the least-important columns truncate with ellipsis +
+  hover tooltip.
+- Flex container for the IP cell so the trailing 📌 button can never be
+  eaten by a long IP string.
+
+### Rationale
+
+Narrow-column fixed widths (150 px / 140 px) were a bad compromise: they
+wasted space on 1920px desktops and still truncated on mid-tier phones.
+`table-layout: auto` with min-widths matches the user's expectation
+better and fixes the "long hostname hides the ✎ button" complaint.
+
+---
+
+## [0.15.4] - 2026-05-12
+
+### Fixed · 修复
+
+- `validateName` for static-DHCP host names rewritten from a whitelist
+  regex (`^[A-Za-z0-9_-]{0,63}$`) to a UTF-8 blacklist (bans only shell /
+  uci metacharacters: `'"\\` `` ` `` `$;|&<>` and control chars). Chinese
+  names, spaces, dots, colons, middle-dot, and other Unicode punctuation
+  are now accepted; length still capped at 63 bytes for dnsmasq.
+- `TestValidateName` updated to cover the new contract: "uuxia的iPhone",
+  "客厅·音箱", "has space", "192.168.x" are all accepted; every shell
+  metacharacter individually rejected.
+
+### Rationale
+
+Users with Chinese-speaking households couldn't set meaningful names on
+their devices ("iPhone of 小明" was rejected). The old regex was an
+over-conservative whitelist; the new blacklist is strictly narrower than
+what `uci set key=value` can safely accept, so injection is still blocked
+while the legitimate character set expands dramatically.
+
+---
+
 ## [0.15.3] - 2026-05-10
 
 **CRITICAL BUG FIX.** User report: after setting a static IP via the

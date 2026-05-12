@@ -5,7 +5,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/xxl6097/argusd.svg)](https://pkg.go.dev/github.com/xxl6097/argusd)
 [![Go Report Card](https://goreportcard.com/badge/github.com/xxl6097/argusd)](https://goreportcard.com/report/github.com/xxl6097/argusd)
-[![Go version](https://img.shields.io/github/go-mod/go-version/xxl6097/argus)](go.mod)
+[![Go version](https://img.shields.io/github/go-mod/go-version/xxl6097/argusd)](go.mod)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-passing-brightgreen)](.)
 [![Release](https://img.shields.io/github/v/release/xxl6097/argusd?sort=semver)](https://github.com/xxl6097/argusd/releases)
@@ -497,9 +497,15 @@ Sample decision trace · 决策跟踪示例:
 - [x] **EN** Fuzz targets for syslog / DHCP lease parsers (v0.12.0)
       **中文** Syslog / DHCP 租约解析器 fuzz 目标(v0.12.0)
 - [x] **EN** Built-in Web UI (HTTP + SSE, v0.13.0) · **中文** 内置 Web UI(HTTP + SSE, v0.13.0)
+- [x] **EN** Device aliases with UTF-8 names (v0.14.0 / v0.15.4) · **中文** 设备别名,允许中文(v0.14.0 / v0.15.4)
+- [x] **EN** Static DHCP reservations via UCI + immediate-apply (v0.15.0 / v0.15.2 / v0.15.7 / v0.15.8) · **中文** 静态 IP 预留 + 立即生效(v0.15.0 / v0.15.2 / v0.15.7 / v0.15.8)
+- [x] **EN** IP-conflict 409 + one-click replace + PurgeArgusOwned recovery (v0.15.3 / v0.15.5) · **中文** IP 冲突 409 + 一键替换 + 一键修复(v0.15.3 / v0.15.5)
+- [x] **EN** System endpoints: reboot + restart-network (v0.15.9) · **中文** 系统接口:重启路由器 + 重启网络(v0.15.9)
+- [x] **EN** **v1.0 tagged** — Stable surface locked under SemVer v1 rules (v1.0.0) · **中文** **v1.0 已发布** — SemVer v1 规则下稳定表面锁定(v1.0.0)
 - [ ] **EN** Direct `ubus` socket integration (skip CLI) · **中文** 直连 `ubus` socket,跳过 CLI
 - [ ] **EN** IPv6-only device support · **中文** 仅 IPv6 设备支持
 - [ ] **EN** Home Assistant `device_tracker` bridge · **中文** Home Assistant 桥接
+- [ ] **EN** Prometheus `/metrics` endpoint (argusweb bridge) · **中文** Prometheus `/metrics` 出口(argusweb 桥接)
 
 ---
 

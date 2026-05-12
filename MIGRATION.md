@@ -13,10 +13,12 @@ surface within any `0.x.y` window. v1.0.0 crystallizes that contract.
 
 ## Upgrading to v1.0.0
 
-**TL;DR** — if you were on **v0.7.0**, this is a no-op upgrade: `go get -u
-github.com/xxl6097/argusd@v1.0.0`, rebuild, done. No code change needed.
+**TL;DR** — if you were on **any v0.7.0+ release**, this is a no-op upgrade:
+`go get -u github.com/xxl6097/argusd@v1.0.0`, rebuild, done. No code
+change needed.
 
-**中文** — 从 v0.7.0 升级 v1.0.0 无需修改代码,拉取新版本重新构建即可。
+**中文** — 从 v0.7.0 之后的任意版本升级 v1.0.0 无需修改代码,拉取新版本
+重新构建即可。
 
 ### What v1.0.0 locks in
 
@@ -33,6 +35,11 @@ From this release onward, the "Stable public surface" list in
 - **JSON field names** (`mac`, `ip`, `hostname`, … per STABILITY.md)
   are part of the contract. New fields use `omitempty` so sparse
   documents round-trip cleanly.
+- **`argusweb` wire shapes** (`/api/devices`, `/api/events`,
+  `/api/aliases`, `/api/dhcp` including `applyReport` fields
+  `reloaded` / `pruned` / `arp_flushed` / `kicked` / `wifi_restarted`,
+  plus `/api/system/reboot` and `/api/system/restart-network` since
+  v0.15.9) are part of the Stable surface.
 - **Zero-cost `DecisionHandler` when unset** (≤ 2 ns/op, 0 allocs)
   stays a CI-enforced guarantee via `BenchmarkEmitDecisionNil`.
 
@@ -52,15 +59,31 @@ From this release onward, the "Stable public surface" list in
    ```
 4. **Use `argustest.FixedFetcher` / `FakeProber`** in downstream tests
    instead of reimplementing fixtures.
+5. **If you embed `argusweb`**, use the `applyReport` JSON fields
+   (all `omitempty`) to render status instead of pattern-matching the
+   `message` string, which is informational.
 
-### Nothing changed at the code level
+### Nothing changed at the code level vs v0.15.9
 
-v1.0.0 ships the v0.7.0 code unchanged except for:
-- Version metadata bump in docs
-- `STABILITY.md` v1.0 checklist → all items `✅`
-- This migration guide
+v1.0.0 points at the same commit as v0.15.9 + the v0.15.4 → v0.15.9
+changes already landed on `main`. No symbol was added, removed, or
+renamed between v0.15.9 and v1.0.0; only docs and the tag annotation
+changed.
 
-No symbol was added, removed, or renamed. No semantics changed.
+### Cumulative deltas since v0.14.0 (non-breaking additions)
+
+| Release | New additions |
+|---|---|
+| v0.14.0 | `WithAliases`, `AliasStore`, `/api/aliases` |
+| v0.15.0 | `WithDHCPManager`, `DHCPManager`, `StaticLease`, `NewUCIDHCPManager`, `/api/dhcp` |
+| v0.15.3 | `ErrIPAlreadyReserved`, `(*UCIDHCPManager).PurgeArgusOwned`, 409 response shape, `?purge_argus=1` query |
+| v0.15.4 | `validateName` UTF-8 whitelist (names now accept Chinese / spaces / dots) |
+| v0.15.5 | 409 one-click replace in dashboard (no API change; UI only) |
+| v0.15.7 | `applyReport.ARPFlushed` field; `dismissTime` bumped to 30s |
+| v0.15.8 | `?restart_wifi=1` query on `POST`/`DELETE /api/dhcp`; `applyReport.WiFiRestarted` field |
+| v0.15.9 | `POST /api/system/reboot`, `POST /api/system/restart-network` |
+
+All items above are additions only — old clients remain compatible.
 
 ---
 

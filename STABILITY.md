@@ -172,14 +172,18 @@ Functions marked `// Deprecated:` will emit an IDE warning and pkg.go.dev banner
 
 ---
 
-## Path to v1.0 — criteria met (soak pending)
+## v1.0 — released 2026-05-12
 
-As of v0.8.0, all criteria for cutting v1.0 are satisfied. The tag is
-held until the maintainer decides the soak window has been long
-enough — v1.0 locks the Stable public surface under SemVer v1 rules,
-so breaking changes afterward require a `v2` module path.
+**v1.0.0 is tagged.** The Stable public surface listed above is now
+frozen under SemVer v1 rules: breaking changes require a `v2` module
+path (`github.com/xxl6097/argusd/v2`). Additions (new exported symbols,
+new `Config` fields with zero-value-preserves-default, new `EventKind` /
+`DecisionKind` constants) continue to ship as minor bumps within the 1.x
+line and are non-breaking.
 
-1. ✅ No breaking change to any item in the "Stable public surface" list across 0.3 → 0.8 (six releases)
+### Criteria met at tag time
+
+1. ✅ No breaking change to any item in the "Stable public surface" list across 0.3 → 0.15.9 (twelve+ releases)
 2. ✅ `go test -race ./...` passing on every tagged release; multi-version matrix (Go 1.21 – 1.25) since v0.8.0
 3. ✅ `go vet ./...` clean
 4. ✅ No unresolved `Deprecated` entries with removal intent
@@ -194,14 +198,10 @@ so breaking changes afterward require a `v2` module path.
 13. ✅ Context cancellation contract documented + tested (v0.8.0)
 14. ✅ Multi-Go-version CI matrix (Go 1.21 – 1.25, N-2 policy) (v0.8.0)
 15. ✅ Security policy + maintenance signals ([`SECURITY.md`](./SECURITY.md), [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md), issue/PR templates) (v0.8.0)
+16. ✅ Web UI opt-in subpackage (`argusweb`), stable from v0.13.0; static DHCP / aliases / system endpoints stable from v0.14 / v0.15 / v0.15.9
 
-**Post-v1.0 policy**: any breaking change to Stable surface requires a
-`v2` module path (`github.com/xxl6097/argusd/v2`). Additions (new
-symbols, new `Config` fields with zero-value-preserves-default, new
-`DecisionKind` / `EventKind` constants) continue to ship as minor
-bumps and are non-breaking.
-
-See [`MIGRATION.md`](./MIGRATION.md) for per-release upgrade notes.
+See [`MIGRATION.md`](./MIGRATION.md) for per-release upgrade notes and
+[`CHANGELOG.md`](./CHANGELOG.md) for the full history.
 
 ---
 
