@@ -114,9 +114,15 @@ var dhcpLeaseFiles = []string{
 // Order matters: we try the vendor ubus method first (most surgical),
 // then the mainline OpenWrt hostapd ubus method, then the lower-level
 // `iw station del`. {{MAC}} is replaced with the lowercased MAC.
+//
+// dismissTime:30 — observed on iOS: a 2-second dismiss is too short; the
+// device reconnects before its DHCP client has time to drop the cached
+// lease, so it tries RENEWING the old IP, takes a NAK, and often falls
+// back to the cached address anyway. 30 s reliably forces a full
+// release + fresh DISCOVER on both iOS and Android.
 var staKickCmds = [][]string{
 	// MTK ahsapd vendor firmware (C-Life and similar)
-	{"ubus", "call", "ahsapd.roaming", "staDisconnect", `{"macAddress":"{{MAC}}","dismissTime":2}`},
+	{"ubus", "call", "ahsapd.roaming", "staDisconnect", `{"macAddress":"{{MAC}}","dismissTime":30}`},
 	// Mainline OpenWrt hostapd ubus — exists on stock images. We don't
 	// know the iface here so we fall through to iw if this errors.
 }
@@ -591,7 +597,18 @@ func applyDHCPChanges(ctx context.Context, mac string) applyReport {
 		}
 	}
 
-	// 3. Kick the station.
+	// 3. Flush any ARP entry still mapping this MAC to its old IP.
+	// Without this, iOS in particular re-advertises the cached address
+	// via ARP after the kick, and the router happily confirms it —
+	// letting the device ignore the DHCPNAK. Deleting the neigh entry
+	// forces the kernel to re-resolve after the device reconnects.
+	if mac != "" {
+		if flushed := flushARPForMAC(ctx, mac); flushed != "" {
+			rep.ARPFlushed = flushed
+		}
+	}
+
+	// 4. Kick the station.
 	if mac != "" {
 		for _, tmpl := range staKickCmds {
 			if len(tmpl) == 0 {
@@ -617,13 +634,51 @@ func applyDHCPChanges(ctx context.Context, mac string) applyReport {
 	return rep
 }
 
+// flushARPForMAC scans /proc/net/arp, finds every entry whose HW addr
+// matches mac (case-insensitive), and deletes it via `ip neigh del`.
+// Returns the old IP that was flushed (first match), or "" if none.
+// Best-effort: errors are swallowed because this is a courtesy.
+func flushARPForMAC(ctx context.Context, mac string) string {
+	data, err := os.ReadFile("/proc/net/arp")
+	if err != nil {
+		return ""
+	}
+	macLower := strings.ToLower(mac)
+	var flushedIP string
+	for i, line := range strings.Split(string(data), "\n") {
+		if i == 0 { // header
+			continue
+		}
+		fields := strings.Fields(line)
+		// Columns: IP  HW-type  Flags  HW-addr  Mask  Device
+		if len(fields) < 6 {
+			continue
+		}
+		if strings.ToLower(fields[3]) != macLower {
+			continue
+		}
+		oldIP, iface := fields[0], fields[5]
+		if _, err := exec.LookPath("ip"); err != nil {
+			return ""
+		}
+		ctxK, cancel := context.WithTimeout(ctx, 2*time.Second)
+		_ = exec.CommandContext(ctxK, "ip", "neigh", "del", oldIP, "dev", iface).Run()
+		cancel()
+		if flushedIP == "" {
+			flushedIP = oldIP
+		}
+	}
+	return flushedIP
+}
+
 // applyReport summarizes what applyDHCPChanges did, for inclusion in
 // the /api/dhcp POST/DELETE response body. Consumers use this to
 // render an accurate "已生效" vs "已保存,但需要设备续租后生效" hint.
 type applyReport struct {
-	Reloaded []string `json:"reloaded,omitempty"` // init scripts that reloaded successfully
-	Pruned   []string `json:"pruned,omitempty"`   // lease files pruned
-	Kicked   string   `json:"kicked,omitempty"`   // station-kick command that succeeded, if any
+	Reloaded   []string `json:"reloaded,omitempty"`    // init scripts that reloaded successfully
+	Pruned     []string `json:"pruned,omitempty"`      // lease files pruned
+	ARPFlushed string   `json:"arp_flushed,omitempty"` // old IP whose ARP entry we deleted
+	Kicked     string   `json:"kicked,omitempty"`      // station-kick command that succeeded, if any
 }
 
 // bytes_HasPrefix works around a lint-ish preference for not importing

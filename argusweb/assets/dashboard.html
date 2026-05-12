@@ -594,8 +594,11 @@
     if (apply.pruned && apply.pruned.length) {
       parts.push("已清除旧租约 (" + apply.pruned.length + " 个)");
     }
+    if (apply.arp_flushed) {
+      parts.push("已清除 ARP 缓存 (旧 IP " + apply.arp_flushed + ")");
+    }
     if (apply.kicked) {
-      parts.push("已踢出该设备,正在重连并重新申请 IP");
+      parts.push("已踢出该设备 30s,正在重连并重新申请 IP");
     } else if (apply.reloaded && apply.reloaded.length) {
       parts.push("设备需要下次续约后才会拿到新 IP(最长 12 小时)。手动关开 WiFi 可立即生效");
     }
