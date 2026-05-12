@@ -127,6 +127,20 @@ var staKickCmds = [][]string{
 	// know the iface here so we fall through to iw if this errors.
 }
 
+// wifiRestartCmds enumerates ways to force EVERY WiFi client off the
+// radios for a few seconds. Used as the nuclear option when per-station
+// kick is a silent no-op on vendor firmware (observed on MTK C-Life:
+// ahsapd.roaming staDisconnect returns exit 0 but produces no Del Sta /
+// Deauth kernel event, so iOS stays on its cached IP).
+//
+// First successful command wins. Picks the lightest available:
+//   1. mainline `wifi reload` — safe reconfig without full re-init
+//   2. `/etc/init.d/ahsapd restart` — vendor-firmware nuke
+var wifiRestartCmds = [][]string{
+	{"wifi", "reload"},
+	{"/etc/init.d/ahsapd", "restart"},
+}
+
 // UCIDHCPManager writes static DHCP reservations to OpenWrt's uci-
 // backed /etc/config/dhcp and reloads dnsmasq. Constructed via
 // NewUCIDHCPManager (which refuses to build on non-OpenWrt hosts).
@@ -444,7 +458,7 @@ func (m *UCIDHCPManager) PurgeArgusOwned(ctx context.Context) (int, error) {
 	}
 	committed = true
 	// Best-effort reload so the pruned state takes effect immediately.
-	_ = applyDHCPChanges(ctx, "")
+	_ = applyDHCPChanges(ctx, "", false)
 	return len(seen), nil
 }
 
@@ -568,8 +582,12 @@ func parseUCIDHCPShow(out string) map[string]StaticLease {
 // get here.
 //
 // mac is the lowercased MAC (empty allowed; means "don't kick or
-// prune per-MAC, just reload").
-func applyDHCPChanges(ctx context.Context, mac string) applyReport {
+// prune per-MAC, just reload"). restartWiFi=true additionally runs
+// /etc/init.d/ahsapd restart (or the mainline `wifi` command) to force
+// every WiFi client off for a few seconds — the nuclear option when
+// per-station kick doesn't work on vendor firmware that ignores
+// ahsapd.roaming staDisconnect (e.g. MTK C-Life).
+func applyDHCPChanges(ctx context.Context, mac string, restartWiFi bool) applyReport {
 	var rep applyReport
 
 	// 1. Reload DHCP daemon(s).
@@ -608,7 +626,7 @@ func applyDHCPChanges(ctx context.Context, mac string) applyReport {
 		}
 	}
 
-	// 4. Kick the station.
+	// 4. Kick the station (per-MAC, surgical).
 	if mac != "" {
 		for _, tmpl := range staKickCmds {
 			if len(tmpl) == 0 {
@@ -627,6 +645,29 @@ func applyDHCPChanges(ctx context.Context, mac string) applyReport {
 			cancel()
 			if err == nil {
 				rep.Kicked = argv[0] + " " + argv[1] // "ubus call ..."
+				break
+			}
+		}
+	}
+
+	// 5. Optionally restart WiFi — nuclear option. Disconnects EVERY
+	// client on every radio for ~3-5 seconds. Only run when the caller
+	// explicitly opted in (e.g. per-station kick on this firmware is a
+	// silent no-op, and the user said "OK to disrupt everyone briefly").
+	if restartWiFi {
+		for _, argv := range wifiRestartCmds {
+			if len(argv) == 0 {
+				continue
+			}
+			if _, err := exec.LookPath(argv[0]); err != nil {
+				continue
+			}
+			ctxR, cancel := context.WithTimeout(ctx, 10*time.Second)
+			cmd := exec.CommandContext(ctxR, argv[0], argv[1:]...)
+			_, err := cmd.CombinedOutput()
+			cancel()
+			if err == nil {
+				rep.WiFiRestarted = argv[0] + " " + strings.Join(argv[1:], " ")
 				break
 			}
 		}
@@ -675,10 +716,11 @@ func flushARPForMAC(ctx context.Context, mac string) string {
 // the /api/dhcp POST/DELETE response body. Consumers use this to
 // render an accurate "已生效" vs "已保存,但需要设备续租后生效" hint.
 type applyReport struct {
-	Reloaded   []string `json:"reloaded,omitempty"`    // init scripts that reloaded successfully
-	Pruned     []string `json:"pruned,omitempty"`      // lease files pruned
-	ARPFlushed string   `json:"arp_flushed,omitempty"` // old IP whose ARP entry we deleted
-	Kicked     string   `json:"kicked,omitempty"`      // station-kick command that succeeded, if any
+	Reloaded      []string `json:"reloaded,omitempty"`       // init scripts that reloaded successfully
+	Pruned        []string `json:"pruned,omitempty"`         // lease files pruned
+	ARPFlushed    string   `json:"arp_flushed,omitempty"`    // old IP whose ARP entry we deleted
+	Kicked        string   `json:"kicked,omitempty"`         // per-station kick command that succeeded
+	WiFiRestarted string   `json:"wifi_restarted,omitempty"` // global WiFi restart command that succeeded (nuclear)
 }
 
 // bytes_HasPrefix works around a lint-ish preference for not importing
@@ -836,10 +878,14 @@ func (s *Server) handleDHCPSet(w http.ResponseWriter, r *http.Request) {
 	// Immediate-effect: reload daemons, prune stale lease, kick station.
 	// Only run against the UCIDHCPManager (real implementation); test
 	// stubs don't want side effects on the host.
+	// restart_wifi=1 enables the nuclear option (full WiFi restart);
+	// the user opts in per-request because it briefly disconnects every
+	// WiFi client on the AP.
+	restartWiFi := r.URL.Query().Get("restart_wifi") == "1"
 	var report applyReport
 	if _, ok := s.dhcp.(*UCIDHCPManager); ok {
 		normMAC, _ := validateMAC(in.MAC)
-		report = applyDHCPChanges(ctx, normMAC)
+		report = applyDHCPChanges(ctx, normMAC, restartWiFi)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
@@ -865,7 +911,7 @@ func (s *Server) handleDHCPDelete(w http.ResponseWriter, r *http.Request) {
 	var report applyReport
 	if _, ok := s.dhcp.(*UCIDHCPManager); ok {
 		normMAC, _ := validateMAC(mac)
-		report = applyDHCPChanges(ctx, normMAC)
+		report = applyDHCPChanges(ctx, normMAC, r.URL.Query().Get("restart_wifi") == "1")
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{

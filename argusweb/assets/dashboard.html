@@ -202,6 +202,16 @@
   .modal-sub code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 3px; }
   .modal-field { display: block; margin-bottom: 12px; }
   .modal-field span { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+  .modal-field.modal-checkbox {
+    display: flex; gap: 8px; align-items: flex-start;
+    background: rgba(229,192,123,0.05); border-left: 2px solid var(--change);
+    padding: 8px 10px; border-radius: 2px;
+  }
+  .modal-field.modal-checkbox input { width: auto; margin-top: 3px; flex: 0 0 auto; }
+  .modal-field.modal-checkbox .cb-label { display: block; margin: 0; font-size: 12px; color: var(--fg); }
+  .modal-field.modal-checkbox .cb-label b { color: var(--change); font-weight: 500; }
+  .modal-field.modal-checkbox .cb-label small { color: var(--muted); font-size: 11px; line-height: 1.5; }
+  .modal-field.modal-checkbox .cb-label code { background: rgba(255,255,255,0.06); padding: 1px 4px; border-radius: 2px; }
   .modal-field input {
     width: 100%; background: #0e1014; color: var(--fg);
     border: 1px solid var(--line); border-radius: 4px;
@@ -479,6 +489,16 @@
       '  <span>名称(可选)</span>' +
       '  <input type="text" id="modal-name" maxlength="63" placeholder="argus-auto" value="' + esc(existing ? existing.name : "") + '" />' +
       '</label>' +
+      '<label class="modal-field modal-checkbox">' +
+      '  <input type="checkbox" id="modal-restart-wifi" />' +
+      '  <span class="cb-label">' +
+      '    <b>立即生效 (重启 WiFi)</b><br>' +
+      '    <small>勾选后会 <code>wifi reload</code> / 重启 ahsapd, ' +
+      '全部 WiFi 客户端会瞬断 3~5 秒后自动重连,新 IP 立刻生效。' +
+      '<br>不勾选则只写配置 + 尝试踢该设备; 若厂商固件不支持单机踢 ' +
+      '(如 MTK C-Life), 需用户手动在设备上关开一次 WiFi 才能生效。</small>' +
+      '  </span>' +
+      '</label>' +
       '<div class="modal-hint">保存后网关会重载 dnsmasq。租约类型: 永久 (infinite)。</div>' +
       '<div class="modal-actions">' +
       (existing ? '<button data-act="remove" class="btn-danger">移除</button>' : '') +
@@ -489,14 +509,22 @@
     document.body.appendChild(overlay);
 
     const close = () => overlay.remove();
-    const ipIn   = overlay.querySelector("#modal-ip");
-    const nameIn = overlay.querySelector("#modal-name");
+    const ipIn        = overlay.querySelector("#modal-ip");
+    const nameIn      = overlay.querySelector("#modal-name");
+    const restartChk  = overlay.querySelector("#modal-restart-wifi");
     ipIn.focus();
     ipIn.select();
 
+    // apiURL appends ?restart_wifi=1 when the user has opted into the
+    // nuclear option. The server treats its absence as "just write config
+    // + try per-station kick" (Plan A), and presence as "also run
+    // wifi reload / ahsapd restart" (Plan C).
+    const apiURL = () =>
+      "/api/dhcp" + (restartChk && restartChk.checked ? "?restart_wifi=1" : "");
+
     const doPost = async (body) => {
       try {
-        const r = await fetch("/api/dhcp", {
+        const r = await fetch(apiURL(), {
           method: "POST", headers: {"Content-Type": "application/json"},
           body: JSON.stringify(body),
         });
@@ -519,7 +547,7 @@
             alert("移除原占用者失败: " + (db.error || delR.status));
             return;
           }
-          const r2 = await fetch("/api/dhcp", {
+          const r2 = await fetch(apiURL(), {
             method: "POST", headers: {"Content-Type": "application/json"},
             body: JSON.stringify(body),
           });
@@ -546,7 +574,9 @@
     };
     const doDelete = async () => {
       try {
-        const r = await fetch("/api/dhcp?mac=" + encodeURIComponent(mac), {method: "DELETE"});
+        const r = await fetch("/api/dhcp?mac=" + encodeURIComponent(mac) +
+                              (restartChk && restartChk.checked ? "&restart_wifi=1" : ""),
+                              {method: "DELETE"});
         const b = await r.json().catch(() => ({}));
         if (!r.ok) {
           alert("移除失败: " + (b.error || r.status));
@@ -597,7 +627,9 @@
     if (apply.arp_flushed) {
       parts.push("已清除 ARP 缓存 (旧 IP " + apply.arp_flushed + ")");
     }
-    if (apply.kicked) {
+    if (apply.wifi_restarted) {
+      parts.push("已重启 WiFi (" + apply.wifi_restarted + "),全部设备将在数秒内重连并拿到新 IP");
+    } else if (apply.kicked) {
       parts.push("已踢出该设备 30s,正在重连并重新申请 IP");
     } else if (apply.reloaded && apply.reloaded.length) {
       parts.push("设备需要下次续约后才会拿到新 IP(最长 12 小时)。手动关开 WiFi 可立即生效");
