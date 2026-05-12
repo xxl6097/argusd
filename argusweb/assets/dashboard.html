@@ -57,26 +57,41 @@
   section > h2 .sub { margin-left: auto; font-size: 10px; color: var(--muted); }
 
   /* ---------- Devices (desktop table) ---------- */
-  table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
+  /* table-layout:auto lets columns grow to fit content when the
+     viewport has room; only when the sum exceeds viewport width do
+     the overflow:hidden + text-overflow:ellipsis rules kick in. */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: auto; }
   th, td {
     padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--line);
-    /* Truncate by default; individual cells opt out via td.wrap */
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  /* Fixed-width columns keep the layout predictable on mid-size screens */
-  col.col-status { width: 90px; }
-  col.col-mac    { width: 150px; }
-  col.col-ip     { width: 150px; }
-  col.col-host   { width: auto; }
-  col.col-vendor { width: 140px; }
-  col.col-rssi   { width: 90px; }
-  col.col-link   { width: 130px; }
+  /* Minimum widths keep columns readable when many are truncating
+     simultaneously; max-widths prevent any single wide cell (e.g. a
+     long alias) from pushing other columns off-screen. */
+  col.col-status { min-width: 80px;  width: 1%; }
+  col.col-mac    { min-width: 150px; width: 1%; }
+  col.col-ip     { min-width: 130px; }
+  col.col-host   { min-width: 140px; }
+  col.col-vendor { min-width: 100px; max-width: 200px; }
+  col.col-rssi   { min-width: 88px;  width: 1%; }
+  col.col-link   { min-width: 120px; width: 1%; }
   th {
     color: var(--muted); font-weight: 500; font-size: 11px;
     text-transform: uppercase; letter-spacing: 0.5px;
   }
   tr:hover td { background: rgba(255,255,255,0.02); }
   td.mac    { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  /* IP cell uses flex so the trailing 📌 button stays visible while
+     only the IP text portion truncates with ellipsis. */
+  td.ip-cell {
+    display: flex; align-items: center; gap: 4px;
+    overflow: hidden; white-space: nowrap;
+  }
+  td.ip-cell > .ip-text {
+    flex: 1 1 auto; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  td.ip-cell > .staticip-btn { flex: 0 0 auto; margin-left: 0; }
   td.host   { /* host can be long; truncate via default rule, title= shows full */ }
   td.vendor { color: var(--muted); font-size: 12px; }
   .rssi-strong { color: var(--online); }
@@ -393,10 +408,9 @@
     const ip = d.ip || "—";
     const lease = leases[d.mac];
     const isStatic = !!lease;
-    let html = esc(ip);
-    if (isStatic) {
-      html = '<span class="ip-static" title="已静态分配">🔒 ' + esc(ip) + '</span>';
-    }
+    let html = isStatic
+      ? '<span class="ip-text ip-static" title="已静态分配">🔒 ' + esc(ip) + '</span>'
+      : '<span class="ip-text">' + esc(ip) + '</span>';
     if (caps.dhcp) {
       html += '<span class="staticip-btn" data-action="staticip" title="设为静态 IP">📌</span>';
     }
@@ -488,14 +502,35 @@
         });
         const b = await r.json().catch(() => ({}));
         if (r.status === 409 && b.owner_mac) {
-          // IP is already reserved for a different MAC. Show a precise
-          // message naming the existing owner so the user can either
-          // pick another IP or go release the existing reservation.
-          alert(
-            "IP 冲突: " + b.ip + " 已被另一台设备使用\n" +
+          // IP is already reserved for a different MAC. Offer to
+          // transfer the reservation: delete the existing owner's
+          // reservation, then retry the POST. Cancel leaves both
+          // reservations unchanged.
+          const ok = confirm(
+            "IP 冲突: " + b.ip + " 已被另一台设备占用\n" +
             "占用者 MAC: " + b.owner_mac + "\n\n" +
-            "请换一个 IP,或先移除该设备的静态分配。"
+            "是否替换? 点“确定”会先移除占用者的静态分配,再把此 IP 分配给当前设备。\n" +
+            "点“取消”则保持原样。"
           );
+          if (!ok) return;
+          const delR = await fetch("/api/dhcp?mac=" + encodeURIComponent(b.owner_mac), {method: "DELETE"});
+          if (!delR.ok) {
+            const db = await delR.json().catch(() => ({}));
+            alert("移除原占用者失败: " + (db.error || delR.status));
+            return;
+          }
+          const r2 = await fetch("/api/dhcp", {
+            method: "POST", headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(body),
+          });
+          const b2 = await r2.json().catch(() => ({}));
+          if (!r2.ok) {
+            alert("替换后保存失败: " + (b2.error || r2.status));
+            return;
+          }
+          close();
+          reloadDevices();
+          showApplyToast(b2.apply || {}, "已替换");
           return;
         }
         if (!r.ok) {
