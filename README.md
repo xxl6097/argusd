@@ -1,16 +1,29 @@
 # Argus
 
-> **EN** — The hundred-eyed watcher for OpenWrt device presence.
-> **中文** — 百眼守望者 · 多源融合的 OpenWrt 接入设备观察库。
+> **Real-time OpenWrt device presence & static-IP dashboard — multi-source fusion, sub-second events, zero-dep Web UI**
+> **多源融合、秒级事件、零依赖 Web UI 的 OpenWrt 接入设备观察库**
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/xxl6097/argus.svg)](https://pkg.go.dev/github.com/xxl6097/argus)
 [![Go Report Card](https://goreportcard.com/badge/github.com/xxl6097/argus)](https://goreportcard.com/report/github.com/xxl6097/argus)
+[![Go version](https://img.shields.io/github/go-mod/go-version/xxl6097/argus)](go.mod)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-passing-brightgreen)](.)
+[![Release](https://img.shields.io/github/v/release/xxl6097/argusd?sort=semver)](https://github.com/xxl6097/argusd/releases)
 
-**EN** — Argus is a Go library and CLI tool for real-time device presence detection on OpenWrt routers. It fuses six data sources into a single millisecond-grade event stream: `Online` / `Offline` / `Change`. Named after the hundred-eyed giant of Greek myth — whose eyes never all slept — Argus keeps watch over every WiFi station and wired host on your LAN.
+![Dashboard](./docs/images/dashboard-desktop.png)
 
-**中文** — Argus 是一个针对 OpenWrt 路由器的**实时设备感知库与命令行工具**,融合六路数据源形成毫秒级事件流:上线(`Online`) / 离线(`Offline`) / 状态变更(`Change`)。名字取自希腊神话中的百眼巨人——他的眼睛永远不会同时闭上——永不沉睡的守望者。
+**EN** — Argus is a Go library + CLI for **real-time WiFi/wired device presence** on OpenWrt routers. It fuses six data sources (ahsapd · hostapd · `logread` · DHCP leases · ARP · ICMP) into a single sub-second event stream — `Online` / `Offline` / `Change` — and ships an **opt-in Web UI** with static-IP reservations, device aliases, and one-click recovery tools. Zero-dep, works on stock OpenWrt + MediaTek vendor firmwares (C-Life and similar). Named after the hundred-eyed giant of Greek myth — whose eyes never all slept.
+
+**中文** — Argus 是一个针对 OpenWrt 路由器的**实时设备感知库与命令行工具**,融合六路数据源(ahsapd · hostapd · syslog · DHCP 租约 · ARP · ICMP)形成秒级事件流:上线(`Online`) / 离线(`Offline`) / 状态变更(`Change`),并内置**零依赖 Web UI**(静态 IP 预留、设备别名、一键修复)。名字取自希腊神话中的百眼巨人——他的眼睛永远不会同时闭上——永不沉睡的守望者。
+
+**Quick start · 30 秒跑起来**:
+
+```bash
+# 下载 · Releases page: https://github.com/xxl6097/argusd/releases
+scp argusd root@192.168.1.1:/tmp/ && ssh root@192.168.1.1 \
+  '/tmp/argusd -listen :8080 -aliases /etc/argusd/aliases.json'
+# 浏览器 · Open http://<router-ip>:8080/
+```
 
 ---
 
