@@ -196,7 +196,7 @@ so breaking changes afterward require a `v2` module path.
 15. ✅ Security policy + maintenance signals ([`SECURITY.md`](./SECURITY.md), [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md), issue/PR templates) (v0.8.0)
 
 **Post-v1.0 policy**: any breaking change to Stable surface requires a
-`v2` module path (`github.com/xxl6097/argus/v2`). Additions (new
+`v2` module path (`github.com/xxl6097/argusd/v2`). Additions (new
 symbols, new `Config` fields with zero-value-preserves-default, new
 `DecisionKind` / `EventKind` constants) continue to ship as minor
 bumps and are non-breaking.

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	argus "github.com/xxl6097/argus"
+	argus "github.com/xxl6097/argusd"
 )
 
 // TestEventJSONRoundTrip 验证 Event → JSON → Event 的稳定性。
@@ -91,10 +91,10 @@ func TestChangeJSONFields(t *testing.T) {
 
 func TestConfigJSONRoundTrip(t *testing.T) {
 	cfg := argus.Config{
-		PollInterval:      2 * time.Second,
-		OfflineMisses:     10,
-		WeakRSSI:          -75,
-		DisableCooldown:   true,
+		PollInterval:    2 * time.Second,
+		OfflineMisses:   10,
+		WeakRSSI:        -75,
+		DisableCooldown: true,
 	}
 	data, err := json.Marshal(cfg)
 	if err != nil {

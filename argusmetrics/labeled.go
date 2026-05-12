@@ -4,7 +4,7 @@ import (
 	"strings"
 	"sync"
 
-	argus "github.com/xxl6097/argus"
+	argus "github.com/xxl6097/argusd"
 )
 
 // LabelExtractor pulls label values from a Decision in the order

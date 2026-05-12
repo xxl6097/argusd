@@ -8,8 +8,8 @@
 // Typical usage:
 //
 //	import (
-//	    argus "github.com/xxl6097/argus"
-//	    "github.com/xxl6097/argus/argusmetrics"
+//	    argus "github.com/xxl6097/argusd"
+//	    "github.com/xxl6097/argusd/argusmetrics"
 //	)
 //
 //	m := argusmetrics.New()
@@ -28,7 +28,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	argus "github.com/xxl6097/argus"
+	argus "github.com/xxl6097/argusd"
 )
 
 // maxKind 是 Counters 内部数组大小的上限, 涵盖当前所有 DecisionKind 值

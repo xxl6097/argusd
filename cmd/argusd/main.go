@@ -35,9 +35,9 @@ import (
 	"syscall"
 	"time"
 
-	owrt "github.com/xxl6097/argus"
-	"github.com/xxl6097/argus/argusmetrics"
-	"github.com/xxl6097/argus/argusweb"
+	owrt "github.com/xxl6097/argusd"
+	"github.com/xxl6097/argusd/argusmetrics"
+	"github.com/xxl6097/argusd/argusweb"
 )
 
 func main() {

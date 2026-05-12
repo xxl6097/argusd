@@ -60,7 +60,7 @@
 //
 //   - Logs via [WithLogger] (library never logs from the hot path; only lifecycle
 //     and recoverable anomalies).
-//   - Metrics via the [github.com/xxl6097/argus/argusmetrics] subpackage
+//   - Metrics via the [github.com/xxl6097/argusd/argusmetrics] subpackage
 //     ([argusmetrics.Counters] for totals, [argusmetrics.LabeledCounters] for
 //     per-SSID / per-MAC / per-band bucketing), both zero-dependency.
 //   - Decision traces via [WithDecisionHandler] — every internal choice the diff

@@ -40,7 +40,7 @@ import (
 	"sync"
 	"time"
 
-	argus "github.com/xxl6097/argus"
+	argus "github.com/xxl6097/argusd"
 )
 
 //go:embed assets/dashboard.html
@@ -298,20 +298,20 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 // Status, OfflineAtMs, and Alias are argusweb additions and are
 // documented in STABILITY.md under the argusweb subpackage.
 type deviceRow struct {
-	MAC          string `json:"mac"`
-	IP           string `json:"ip,omitempty"`
-	Hostname     string `json:"hostname,omitempty"`
-	Vendor       string `json:"vendor,omitempty"`
-	Type         string `json:"type,omitempty"`
-	Radio        string `json:"radio,omitempty"`
-	SSID         string `json:"ssid,omitempty"`
-	Channel      int    `json:"channel,omitempty"`
-	RSSI         int    `json:"rssi,omitempty"`
-	Wired        bool   `json:"wired"`
-	LastSeenMs   int64  `json:"last_seen_ms,omitempty"`
-	Status       string `json:"status"`                  // "online" | "offline" (since v0.13.3)
-	OfflineAtMs  int64  `json:"offline_at_ms,omitempty"` // set when status=="offline"
-	Alias        string `json:"alias,omitempty"`         // user-defined name (since v0.14.0)
+	MAC         string `json:"mac"`
+	IP          string `json:"ip,omitempty"`
+	Hostname    string `json:"hostname,omitempty"`
+	Vendor      string `json:"vendor,omitempty"`
+	Type        string `json:"type,omitempty"`
+	Radio       string `json:"radio,omitempty"`
+	SSID        string `json:"ssid,omitempty"`
+	Channel     int    `json:"channel,omitempty"`
+	RSSI        int    `json:"rssi,omitempty"`
+	Wired       bool   `json:"wired"`
+	LastSeenMs  int64  `json:"last_seen_ms,omitempty"`
+	Status      string `json:"status"`                  // "online" | "offline" (since v0.13.3)
+	OfflineAtMs int64  `json:"offline_at_ms,omitempty"` // set when status=="offline"
+	Alias       string `json:"alias,omitempty"`         // user-defined name (since v0.14.0)
 }
 
 // applyAlias annotates the row with a user-defined friendly name when

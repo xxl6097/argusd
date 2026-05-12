@@ -1,6 +1,6 @@
 # SOAK_v0.7.0.md — 30-Minute Real-Device Soak Report
 
-**Subject**: `argusd` v0.7.0 (`github.com/xxl6097/argus` @ `9174ac8`)
+**Subject**: `argusd` v0.7.0 (`github.com/xxl6097/argusd` @ `9174ac8`)
 **Build**: `linux/arm64`, `go1.25.0`, stripped, 2.6 MiB
 **Device**: OpenWrt router 192.168.10.1 · `aarch64` ARMv8 (4-core) · kernel 5.4.225
 **Window**: 2026-05-10 12:19:24 CST → 12:49:53 CST (30 min 29 s)

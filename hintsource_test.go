@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	argus "github.com/xxl6097/argus"
+	argus "github.com/xxl6097/argusd"
 )
 
 // staticHintSource is a test-only HintSource returning a fixed map.
@@ -46,7 +46,7 @@ func TestDefaultHintSourceCustomPaths(t *testing.T) {
 	src := &argus.DefaultHintSource{
 		LeasesPath: leases,
 		ARPCommand: []string{"true"}, // 占位命令, 不会产生 ARP 输出
-		CacheTTL:   1,                 // 极短 TTL 禁用缓存, 便于多测试串联
+		CacheTTL:   1,                // 极短 TTL 禁用缓存, 便于多测试串联
 	}
 	got := src.Hints(context.Background())
 	if got["aa:bb:cc:dd:ee:ff"].IP != "10.0.0.42" {

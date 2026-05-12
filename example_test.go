@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	argus "github.com/xxl6097/argus"
+	argus "github.com/xxl6097/argusd"
 )
 
 // ExampleNew demonstrates the minimal setup: build a Watcher with defaults,

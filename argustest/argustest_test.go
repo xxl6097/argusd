@@ -6,8 +6,8 @@ import (
 	"sync"
 	"testing"
 
-	argus "github.com/xxl6097/argus"
-	"github.com/xxl6097/argus/argustest"
+	argus "github.com/xxl6097/argusd"
+	"github.com/xxl6097/argusd/argustest"
 )
 
 func TestFixedFetcherReturnsDevicesCopy(t *testing.T) {

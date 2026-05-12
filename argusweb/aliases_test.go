@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	argus "github.com/xxl6097/argus"
-	"github.com/xxl6097/argus/argustest"
-	"github.com/xxl6097/argus/argusweb"
+	argus "github.com/xxl6097/argusd"
+	"github.com/xxl6097/argusd/argustest"
+	"github.com/xxl6097/argusd/argusweb"
 )
 
 // --- AliasStore unit tests ------------------------------------------------

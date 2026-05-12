@@ -14,7 +14,7 @@ surface within any `0.x.y` window. v1.0.0 crystallizes that contract.
 ## Upgrading to v1.0.0
 
 **TL;DR** — if you were on **v0.7.0**, this is a no-op upgrade: `go get -u
-github.com/xxl6097/argus@v1.0.0`, rebuild, done. No code change needed.
+github.com/xxl6097/argusd@v1.0.0`, rebuild, done. No code change needed.
 
 **中文** — 从 v0.7.0 升级 v1.0.0 无需修改代码,拉取新版本重新构建即可。
 
@@ -24,7 +24,7 @@ From this release onward, the "Stable public surface" list in
 [`STABILITY.md`](./STABILITY.md) is frozen under SemVer v1 rules:
 
 - **Breaking changes** to Stable surface require a `v2` module path
-  (`github.com/xxl6097/argus/v2`). No breaking change will ship as a
+  (`github.com/xxl6097/argusd/v2`). No breaking change will ship as a
   minor or patch bump.
 - **Additions** (new exported types, functions, methods, options, errors,
   fields; new `DecisionKind` / `EventKind` constants; new `Config`
@@ -38,7 +38,7 @@ From this release onward, the "Stable public surface" list in
 
 ### Recommended hygiene for v1.0.0 consumers
 
-1. **Pin the module version** in `go.mod`: `require github.com/xxl6097/argus v1.0.0`
+1. **Pin the module version** in `go.mod`: `require github.com/xxl6097/argusd v1.0.0`
 2. **Prefer typed errors over string match**:
    ```go
    if errors.Is(err, argus.ErrInvalidConfig) { /* … */ }

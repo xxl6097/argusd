@@ -243,7 +243,7 @@ Argus is MIT-licensed, single-binary Go, cross-compiles to
 mipsle/arm64/amd64, works on stock OpenWrt and most MediaTek vendor
 forks. No cgo, no agents on clients.
 
-- Source: <https://github.com/xxl6097/argus>
+- Source: <https://github.com/xxl6097/argusd>
 - CLI binaries: <https://github.com/xxl6097/argusd/releases>
 - Related deep-dives:
   [`ONLINE.md`](../../ONLINE.md),

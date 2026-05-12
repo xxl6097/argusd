@@ -6,8 +6,8 @@
 // 典型用法:
 //
 //	import (
-//	    argus "github.com/xxl6097/argus"
-//	    "github.com/xxl6097/argus/argustest"
+//	    argus "github.com/xxl6097/argusd"
+//	    "github.com/xxl6097/argusd/argustest"
 //	)
 //
 //	func TestMyBusinessLogic(t *testing.T) {
@@ -29,7 +29,7 @@ import (
 	"context"
 	"sync"
 
-	argus "github.com/xxl6097/argus"
+	argus "github.com/xxl6097/argusd"
 )
 
 // FixedFetcher 是一个返回固定设备列表的 argus.Fetcher 实现, 可选注入错误。

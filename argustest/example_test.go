@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	argus "github.com/xxl6097/argus"
-	"github.com/xxl6097/argus/argustest"
+	argus "github.com/xxl6097/argusd"
+	"github.com/xxl6097/argusd/argustest"
 )
 
 // ExampleFixedFetcher shows how library consumers use argustest.FixedFetcher

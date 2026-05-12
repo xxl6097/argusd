@@ -16,7 +16,7 @@ fixes for 6 months after the next minor ships.
 **Do not** open a public GitHub issue for security reports.
 
 Please email the maintainer at **xxl6097@gmail.com** (or open a private
-[security advisory](https://github.com/xxl6097/argus/security/advisories/new)
+[security advisory](https://github.com/xxl6097/argusd/security/advisories/new)
 on GitHub) with:
 
 - Affected version(s) / commit hash

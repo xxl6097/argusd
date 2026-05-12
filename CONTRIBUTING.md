@@ -50,7 +50,7 @@ Version bump guidance:
   - The current minor line receives bug fixes and security patches.
   - The previous minor line receives **security-only** fixes for 6 months after the next minor ships.
   - Pre-v1.0 (the 0.x line) has no LTS — upgrade to the latest 0.x for fixes.
-- **Breaking changes** after v1.0 ship only in a `v2` module path (`github.com/xxl6097/argus/v2`). See `STABILITY.md`.
+- **Breaking changes** after v1.0 ship only in a `v2` module path (`github.com/xxl6097/argusd/v2`). See `STABILITY.md`.
 - **Deprecations** give at least one full minor cycle (e.g. if deprecated in 1.3, earliest removal candidate is 2.0) and appear in `MIGRATION.md`.
 
 ## Security

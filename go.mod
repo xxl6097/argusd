@@ -1,3 +1,3 @@
-module github.com/xxl6097/argus
+module github.com/xxl6097/argusd
 
 go 1.21

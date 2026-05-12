@@ -3,8 +3,8 @@
 > **Real-time OpenWrt device presence & static-IP dashboard — multi-source fusion, sub-second events, zero-dep Web UI**
 > **多源融合、秒级事件、零依赖 Web UI 的 OpenWrt 接入设备观察库**
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/xxl6097/argus.svg)](https://pkg.go.dev/github.com/xxl6097/argus)
-[![Go Report Card](https://goreportcard.com/badge/github.com/xxl6097/argus)](https://goreportcard.com/report/github.com/xxl6097/argus)
+[![Go Reference](https://pkg.go.dev/badge/github.com/xxl6097/argusd.svg)](https://pkg.go.dev/github.com/xxl6097/argusd)
+[![Go Report Card](https://goreportcard.com/badge/github.com/xxl6097/argusd)](https://goreportcard.com/report/github.com/xxl6097/argusd)
 [![Go version](https://img.shields.io/github/go-mod/go-version/xxl6097/argus)](go.mod)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-passing-brightgreen)](.)
@@ -116,7 +116,7 @@ import (
     "os/signal"
     "syscall"
 
-    argus "github.com/xxl6097/argus"
+    argus "github.com/xxl6097/argusd"
 )
 
 func main() {
@@ -379,8 +379,8 @@ POST `/api/dhcp` 错误码:
 | `argus.DetectLocalLocation()` | **EN** Parse `/etc/TZ` → `*time.Location` (no global mutation) · **中文** 解析 `/etc/TZ`,不修改全局状态 |
 | `argus.SetupLocalTimezone()` | **EN** *Deprecated.* Mutates `time.Local` · **中文** *已废弃*,修改全局 `time.Local` |
 | `argus.ErrHandlerRequired` / `ErrInvalidConfig` / `ErrNoFetcher` / `ErrFetchFailed` / `ErrAlreadyRunning` | **EN** Sentinel errors (`errors.Is`-compatible) · **中文** Sentinel 错误,可用 `errors.Is` 判别 |
-| `github.com/xxl6097/argus/argusmetrics` | **EN** Zero-dep `Counters` + `LabeledCounters` (v0.7.0 / v0.10.0+) · **中文** 零依赖计数器 |
-| `github.com/xxl6097/argus/argustest` | **EN** `FixedFetcher` / `FakeProber` for downstream tests (v0.6.0+) · **中文** 下游测试用的数据源 fixture |
+| `github.com/xxl6097/argusd/argusmetrics` | **EN** Zero-dep `Counters` + `LabeledCounters` (v0.7.0 / v0.10.0+) · **中文** 零依赖计数器 |
+| `github.com/xxl6097/argusd/argustest` | **EN** `FixedFetcher` / `FakeProber` for downstream tests (v0.6.0+) · **中文** 下游测试用的数据源 fixture |
 
 Functional options · 函数式选项:
 
@@ -537,7 +537,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./cmd/argusd
 - [`OFFLINE.md`](./OFFLINE.md) — **EN** offline + cooldown analysis · **中文** 离线与冷却机制解析
 - [`docs/SIGHUP-real-device-test.md`](./docs/SIGHUP-real-device-test.md) — **EN** v0.5.0 Stop+Restart real-router validation report · **中文** v0.5.0 SIGHUP 热重载真机测试报告
 - [`docs/blog/ios-static-ip.md`](./docs/blog/ios-static-ip.md) — **EN** Debugging story: the 3 ways "set static IP" silently fails on iOS + OpenWrt · **中文** 调试故事:OpenWrt + iPhone 静态 IP 不生效的三种死法
-- [GoDoc](https://pkg.go.dev/github.com/xxl6097/argus) — API reference · API 文档
+- [GoDoc](https://pkg.go.dev/github.com/xxl6097/argusd) — API reference · API 文档
 
 ---
 

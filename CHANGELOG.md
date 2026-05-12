@@ -1085,7 +1085,7 @@ HTTP webhooks. No breaking change.
   - `FakeProber{Reach, AllReachable}` — IP-to-reachability map with concurrent
     `Set` method
   Consumers writing unit tests for business logic on top of Argus can
-  `import "github.com/xxl6097/argus/argustest"` instead of forking internal
+  `import "github.com/xxl6097/argusd/argustest"` instead of forking internal
   fixtures. (`argustest/argustest.go`)
 
 - **JSON serialization is now part of the Stable public surface** (see

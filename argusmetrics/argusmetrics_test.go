@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	argus "github.com/xxl6097/argus"
-	"github.com/xxl6097/argus/argusmetrics"
+	argus "github.com/xxl6097/argusd"
+	"github.com/xxl6097/argusd/argusmetrics"
 )
 
 func TestCountersOnDecision(t *testing.T) {
