@@ -536,6 +536,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./cmd/argusd
 - [`ONLINE.md`](./ONLINE.md) — **EN** online decision deep-dive · **中文** 上线判定深度解析
 - [`OFFLINE.md`](./OFFLINE.md) — **EN** offline + cooldown analysis · **中文** 离线与冷却机制解析
 - [`docs/SIGHUP-real-device-test.md`](./docs/SIGHUP-real-device-test.md) — **EN** v0.5.0 Stop+Restart real-router validation report · **中文** v0.5.0 SIGHUP 热重载真机测试报告
+- [`docs/blog/ios-static-ip.md`](./docs/blog/ios-static-ip.md) — **EN** Debugging story: the 3 ways "set static IP" silently fails on iOS + OpenWrt · **中文** 调试故事:OpenWrt + iPhone 静态 IP 不生效的三种死法
 - [GoDoc](https://pkg.go.dev/github.com/xxl6097/argus) — API reference · API 文档
 
 ---

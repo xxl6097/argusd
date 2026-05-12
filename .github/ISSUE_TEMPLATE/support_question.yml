@@ -1,0 +1,82 @@
+name: Compatibility / support question
+description: Ask about firmware / router / OS compatibility, or request help getting Argus running in your environment
+title: "[support] "
+labels: [support, compatibility, needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for trying Argus. Compatibility questions are welcome — the OpenWrt
+        vendor-firmware landscape is wide and we'd rather add a known-good label to
+        your firmware than silently fail on it.
+
+        **Before filing**: run `argusd -version` and `ubus list` on the router, and
+        include the first 20 lines of `argusd.log`. If `argusd` won't start at all,
+        that's a [bug report](./bug_report.yml) instead.
+
+  - type: input
+    id: router
+    attributes:
+      label: Router hardware
+      description: Brand / model / SoC if known (e.g. "Xiaomi AX3000 / MT7981B")
+      placeholder: "e.g. GL.iNet MT3000 / MT7981B"
+    validations:
+      required: true
+
+  - type: input
+    id: firmware
+    attributes:
+      label: Firmware flavor + version
+      description: Stock OpenWrt version, or vendor firmware name (C-Life, iStoreOS, ImmortalWrt, etc.)
+      placeholder: "e.g. OpenWrt 23.05.2, or C-Life 1.2.3 vendor"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: daemon
+    attributes:
+      label: DHCP daemon in use
+      description: Run `/etc/init.d/dnsmasq status` and `/etc/init.d/odhcpd status` to check. If unsure, pick "not sure".
+      options:
+        - dnsmasq only
+        - odhcpd only
+        - both
+        - neither / custom
+        - not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: ubus_services
+    attributes:
+      label: "Output of `ubus list`"
+      description: Paste the full list — determines which Fetcher we can auto-detect (ahsapd vs hostapd.*)
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: First 30 lines of argusd log
+      description: "`head -30 /tmp/argusd.log` — include the fetcher auto-detect line"
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: question
+    attributes:
+      label: What are you trying to do?
+      description: e.g. "Set a static IP for my iPhone and have it take effect without waiting 12h" or "Get presence events on a stock Raspberry Pi running OpenWrt"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: newcomer
+    attributes:
+      label: First time here?
+      description: If this is your first contribution / issue, we'd love to help. Tick this and we'll make sure a maintainer walks you through it.
+      options:
+        - label: This is my first issue on this repo
+          required: false
