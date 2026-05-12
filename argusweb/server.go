@@ -196,6 +196,8 @@ func NewServer(w *argus.Watcher, opts ...Option) *Server {
 	s.mux.HandleFunc("/api/events", s.handleEvents)
 	s.mux.HandleFunc("/api/aliases", s.handleAliases)
 	s.mux.HandleFunc("/api/dhcp", s.handleDHCP)
+	s.mux.HandleFunc("/api/system/reboot", s.handleReboot)
+	s.mux.HandleFunc("/api/system/restart-network", s.handleRestartNetwork)
 	return s
 }
 

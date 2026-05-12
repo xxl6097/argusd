@@ -41,6 +41,21 @@
   .pill.offline { background: rgba(240,113,120,0.15); color: var(--offline); }
   .pill.change  { background: rgba(229,192,123,0.15); color: var(--change); }
 
+  /* ---------- Header button (e.g. reboot) ---------- */
+  .hdr-btn {
+    background: none; border: 1px solid var(--line); color: var(--muted);
+    padding: 3px 10px; font-size: 11px; border-radius: 10px; cursor: pointer;
+    font-family: inherit; line-height: 1.4;
+  }
+  .hdr-btn:hover { border-color: var(--muted); color: var(--fg); }
+  .hdr-btn.hdr-danger {
+    color: var(--offline); border-color: rgba(240,113,120,0.35);
+    background: rgba(240,113,120,0.06);
+  }
+  .hdr-btn.hdr-danger:hover {
+    background: rgba(240,113,120,0.15); border-color: var(--offline);
+  }
+
   /* ---------- Layout ---------- */
   main {
     padding: 16px var(--pad-h-r) var(--pad-b) var(--pad-h);
@@ -272,6 +287,8 @@
     <span class="pill" id="conn" style="background: rgba(138,143,152,0.15); color: var(--muted);">连接中…</span>
     <span class="pill online" id="count-online" title="在线设备数">在线 0</span>
     <span class="pill offline" id="count-offline" title="离线设备数">离线 0</span>
+    <button id="btn-restart-net" class="hdr-btn" title="重启网络服务 (约 5-15 秒瞬断,保留配置)">重启网络</button>
+    <button id="btn-reboot" class="hdr-btn hdr-danger" title="重启路由器 (将断网 30-60 秒)">重启路由器</button>
   </span>
 </header>
 <main>
@@ -821,6 +838,85 @@
   reloadDevices();
   connectSSE();
   setInterval(reloadDevices, 30000);
+
+  // Reboot button: two-step confirmation because this takes the whole
+  // LAN offline for 30-60 seconds and kills every in-flight session.
+  const rebootBtn = document.getElementById("btn-reboot");
+  if (rebootBtn) {
+    rebootBtn.addEventListener("click", async () => {
+      if (!confirm(
+        "确定要重启路由器吗?\n\n" +
+        "• 所有设备会瞬断网络\n" +
+        "• 路由器约 30-60 秒后恢复\n" +
+        "• 本页面会失去连接,需要手动刷新"
+      )) return;
+      if (!confirm("再次确认: 现在立即重启路由器?")) return;
+      rebootBtn.disabled = true;
+      rebootBtn.textContent = "重启中…";
+      try {
+        const r = await fetch("/api/system/reboot", { method: "POST" });
+        const b = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          alert("重启失败: " + (b.error || r.status));
+          rebootBtn.disabled = false;
+          rebootBtn.textContent = "重启路由器";
+          return;
+        }
+        const t = document.createElement("div");
+        t.className = "toast";
+        t.innerHTML = "<b>已下发重启指令</b><br>" +
+          "路由器将在约 30-60 秒后恢复。<br>" +
+          "恢复后手动刷新本页面即可。";
+        document.body.appendChild(t);
+      } catch (e) {
+        alert("网络错误: " + e.message);
+        rebootBtn.disabled = false;
+        rebootBtn.textContent = "重启路由器";
+      }
+    });
+  }
+
+  // Restart-network button: lighter alternative — reloads /etc/init.d/network,
+  // ~5-15s LAN blip, config preserved. Single confirmation is enough
+  // because this is recoverable and doesn't persist any state change.
+  const restartNetBtn = document.getElementById("btn-restart-net");
+  if (restartNetBtn) {
+    restartNetBtn.addEventListener("click", async () => {
+      if (!confirm(
+        "确定要重启网络服务吗?\n\n" +
+        "• 所有设备会瞬断 5-15 秒\n" +
+        "• 配置保留 (WiFi 密码 / DHCP 预留等)\n" +
+        "• 本页面可能短暂失联, 稍等自动重连"
+      )) return;
+      restartNetBtn.disabled = true;
+      restartNetBtn.textContent = "重启中…";
+      try {
+        const r = await fetch("/api/system/restart-network", { method: "POST" });
+        const b = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          alert("重启网络失败: " + (b.error || r.status));
+          restartNetBtn.disabled = false;
+          restartNetBtn.textContent = "重启网络";
+          return;
+        }
+        const t = document.createElement("div");
+        t.className = "toast";
+        t.innerHTML = "<b>已下发重启网络指令</b><br>" +
+          "约 5-15 秒后恢复。SSE 会自动重连。";
+        document.body.appendChild(t);
+        setTimeout(() => t.classList.add("fade"), 8000);
+        setTimeout(() => t.remove(), 8500);
+      } catch (e) {
+        // Network restart drops the very TCP connection we're on; an
+        // error here is expected, not a failure.
+      } finally {
+        setTimeout(() => {
+          restartNetBtn.disabled = false;
+          restartNetBtn.textContent = "重启网络";
+        }, 15000);
+      }
+    });
+  }
 })();
 </script>
 </body>
