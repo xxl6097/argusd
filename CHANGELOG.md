@@ -17,6 +17,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.0] - 2026-05-14
+
+**Fix: spurious `Offline` for edge-signal devices that bounce off and on the AP within the same second.**
+
+Real-world repro (MT7981 / iPhone 17, RSSI ~ -95 dBm):
+
+```
+21:44:22 [系统日志] 无线断开 / MAC表移除 / MAC表新增 / 无线接入 / 认证完成 / DHCP分配
+21:44:22 设备离线 (RSSI=-95)        ← spurious Offline emitted by handleDisconnectHint
+21:44:24 状态变更 (IP ""→"192.168.1.3") ← poll catches up
+21:53:07 设备离线 (RSSI=-98)        ← real disconnect 9 minutes later, but state is wrong
+```
+
+The `Disconnect` hint fires first and immediately calls `emitOffline`,
+deleting the device from `known`. The follow-up `MAC-add / auth-done`
+hints then take the "new device → cooldown weak-signal" path and get
+silently absorbed, leaving the watcher in an inconsistent
+"offline-but-still-using-IP" state until the next real lifecycle event.
+
+### Added · 新增
+
+- `Config.OfflineRevertWindow time.Duration` — when a connect hint
+  arrives within this window after a freshly-emitted Offline, treat the
+  Offline as a false positive: clear cooldown so the upcoming Online
+  passes the weak-signal gate. **Default: 5 s. Set 0 to disable.**
+  Backwards-compatible: zero value in user config preserves the default.
+- `DecisionOfflineReverted` (kind `27` / string `"OFFLINE_REVERTED"` /
+  label `"撤销离线(立即重连)"`) surfaces every revert event so consumers
+  can collapse the Offline+Online pair into a single RECONNECT visually.
+  All three encodings (integer, English string, Chinese label) follow
+  the existing DecisionKind contract.
+- `Config.Validate` rejects negative `OfflineRevertWindow` (returns
+  `*ConfigError`).
+- Three new regression tests in `watcher_test.go`:
+  - `TestHandleConnectHintRevertsRecentOffline` — happy path
+  - `TestHandleConnectHintNoRevertWhenCooldownOld` — beyond window
+  - `TestHandleConnectHintRevertDisabled` — `OfflineRevertWindow=0`
+
+### Compatibility
+
+- Wire-level addition only. Existing JSON shapes unchanged. Old
+  `DecisionHandler` consumers see one new kind they can ignore.
+- No breaking change to v1.0 Stable surface; this is a v1.1.0 minor
+  bump per the SemVer v1 rules in [`STABILITY.md`](./STABILITY.md).
+
+---
+
 ## [1.0.0] - 2026-05-12
 
 **Milestone release — Stable public surface locked under SemVer v1 rules.**

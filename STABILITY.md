@@ -112,7 +112,7 @@ The following JSON field names are part of the Stable public surface — downstr
 - `Device`: `mac` / `ip` / `hostname` / `vendor` / `type` / `radio` / `ssid` / `channel` / `rssi` / `uptime_ns` / `access_time` / `last_seen`
 - `Change`: `field` / `old` / `new`
 - `Decision`: `time` / `kind` / `mac` / `detail`. `DecisionKind` marshals to the English `String()` too.
-- `Config`: `poll_interval` / `offline_misses` / `fetch_timeout` / `offline_cooldown` / `cooldown_release_rssi` / `weak_rssi` / `extremely_weak_rssi` / `weak_miss_threshold` / `extremely_weak_miss_threshold` / `flap_suppression_window` / `disable_cooldown` / `disable_flap_suppression`. Durations in nanoseconds (Go's default). `omitempty` preserved on all fields so sparse config files work.
+- `Config`: `poll_interval` / `offline_misses` / `fetch_timeout` / `offline_cooldown` / `cooldown_release_rssi` / `weak_rssi` / `extremely_weak_rssi` / `weak_miss_threshold` / `extremely_weak_miss_threshold` / `flap_suppression_window` / `offline_revert_window` (since v1.1.0) / `disable_cooldown` / `disable_flap_suppression`. Durations in nanoseconds (Go's default). `omitempty` preserved on all fields so sparse config files work.
 
 New fields on `Event` / `Device` / `Decision` / `Config` may be added in future minor releases (with `omitempty` so old consumers don't break). Existing fields will not be renamed or removed in the 0.x line.
 

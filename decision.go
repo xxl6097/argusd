@@ -45,6 +45,9 @@ const (
 	// 后续重复 hint (典型: disconnect/deauth/Del Sta 三连发) 直接跳过, 不再各自
 	// 进入 500ms Sleep + ping 流程。
 	DecisionDisconnectSkippedInflight DecisionKind = 26
+	// DecisionOfflineReverted: 离线判定中途收到接入 hint, 撤销本次 Offline 触发。
+	// v1.1.0+: 修复"边缘信号闪断 → 立即重连"场景被错误识别为离线的问题。
+	DecisionOfflineReverted DecisionKind = 27
 
 	// --- diff 轮询分支 ---
 
@@ -87,6 +90,8 @@ func (k DecisionKind) String() string {
 		return "COOLDOWN_SUPPRESS_OFFLINE"
 	case DecisionDisconnectSkippedInflight:
 		return "DISCONNECT_SKIP_INFLIGHT"
+	case DecisionOfflineReverted:
+		return "OFFLINE_REVERTED"
 	case DecisionPollAPSleepProtected:
 		return "POLL_SLEEP_PROTECT"
 	case DecisionPollWeakSignalMiss:
@@ -128,6 +133,8 @@ func (k DecisionKind) Label() string {
 		return "冷却期抑制离线"
 	case DecisionDisconnectSkippedInflight:
 		return "跳过(已在处理)"
+	case DecisionOfflineReverted:
+		return "撤销离线(立即重连)"
 	case DecisionPollAPSleepProtected:
 		return "息屏保护"
 	case DecisionPollWeakSignalMiss:

@@ -47,6 +47,14 @@ type Config struct {
 	// WithConfig 对零值按"保留默认"处理; 若需显式关闭, 请使用 DisableFlapSuppression。
 	FlapSuppressionWindow time.Duration `json:"flap_suppression_window,omitempty"`
 
+	// OfflineRevertWindow 离线撤销窗口: handleConnectHint 收到接入提示时,
+	// 若同一 MAC 在此窗口内刚发出过 EventOffline (例如 syslog 顺序为
+	// disconnect → MAC-add → auth-done, 全部在 1 秒内), 则视为误报, 清除
+	// 冷却期, 后续 Online 不再被弱信号闸抑制, 同时发出
+	// DecisionOfflineReverted 决策供上层将 Offline+Online 合并显示为 RECONNECT。
+	// 默认 5s。设置为 0 关闭撤销机制。v1.1.0+。
+	OfflineRevertWindow time.Duration `json:"offline_revert_window,omitempty"`
+
 	// DisableCooldown 显式关闭冷却期机制。设置为 true 时, OfflineCooldown 相关的
 	// 所有抑制逻辑 (COOLDOWN_SUPPRESS_ONLINE / COOLDOWN_SUPPRESS_OFFLINE /
 	// COOLDOWN_CLEARED) 都不再触发, 离线事件后重新出现的设备立即触发上线。
@@ -76,6 +84,7 @@ func DefaultConfig() Config {
 		WeakMissThreshold:          5,
 		ExtremelyWeakMissThreshold: 2,
 		FlapSuppressionWindow:      30 * time.Second,
+		OfflineRevertWindow:        5 * time.Second,
 	}
 }
 
@@ -128,6 +137,9 @@ func (c Config) Validate() error {
 	if c.ExtremelyWeakMissThreshold <= 0 {
 		return &ConfigError{Field: "ExtremelyWeakMissThreshold", Value: c.ExtremelyWeakMissThreshold, Reason: "must be > 0"}
 	}
+	if c.OfflineRevertWindow < 0 {
+		return &ConfigError{Field: "OfflineRevertWindow", Value: c.OfflineRevertWindow, Reason: "must be >= 0"}
+	}
 	return nil
 }
 
@@ -174,6 +186,9 @@ func WithConfig(c Config) Option {
 		}
 		if c.FlapSuppressionWindow > 0 {
 			w.cfg.FlapSuppressionWindow = c.FlapSuppressionWindow
+		}
+		if c.OfflineRevertWindow > 0 {
+			w.cfg.OfflineRevertWindow = c.OfflineRevertWindow
 		}
 		// Disable* 字段: 零值 (false) 即不修改, 用户传 true 时才覆盖。
 		if c.DisableCooldown {
@@ -884,6 +899,21 @@ func (w *Watcher) handleConnectHint(ctx context.Context, h syslogHint, onEvent E
 		w.stateMu.Unlock()
 		w.emitDecision(DecisionConnectSkippedKnown, h.MAC, "")
 		return // 防重复
+	}
+	// Revert-recent-offline: edge-signal devices commonly produce a syslog
+	// burst like "disconnect → MAC-add → auth-done" all in the same second.
+	// handleDisconnectHint may have already emitted Offline before the
+	// connect hints land. If this connect hint arrives within revertWindow
+	// of that Offline, treat it as a false positive: clear cooldown so the
+	// upcoming Online passes the weak-signal gate, and surface
+	// DecisionOfflineReverted so consumers can collapse the pair into a
+	// single RECONNECT visually.
+	if cdTime, recentOffline := w.offlineCooldown[h.MAC]; recentOffline {
+		if w.cfg.OfflineRevertWindow > 0 && time.Since(cdTime) <= w.cfg.OfflineRevertWindow {
+			delete(w.offlineCooldown, h.MAC)
+			w.emitDecision(DecisionOfflineReverted, h.MAC,
+				fmt.Sprintf("within=%s", time.Since(cdTime).Round(time.Millisecond)))
+		}
 	}
 	// Seed with the device's last-observed wireless shape (Radio/SSID/Vendor/
 	// Type/Channel) if we've seen it before. Prevents the "reconnect as

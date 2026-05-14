@@ -631,6 +631,94 @@ func TestHandleConnectHintInCooldownClearsCooldown(t *testing.T) {
 	}
 }
 
+// TestHandleConnectHintRevertsRecentOffline 是 v1.1.0 的回归测试。
+// 真机日志(MT7981 / iPhone, 2026-05-14)记录了边缘信号闪断的典型场景:
+// 同一秒内出现 "无线断开 → MAC表移除 → MAC表新增 → 无线接入 → 认证完成 → DHCP分配",
+// handleDisconnectHint 抢先发出 EventOffline, 后续 connect hint 因为 known 已被
+// 删除, 走的是新设备上线路径; 但因为冷却期 + 弱 RSSI 又被静默吞掉, 用户视角是
+// "设备离线了但其实还在用", 而下次 9 分钟后真离线时又看到一次离线事件,
+// 状态机出现错配。
+//
+// 修复后: 接入提示在 OfflineRevertWindow 内到达时, 清除冷却期并发出
+// DecisionOfflineReverted, 保证后续 Online 事件能正常发出。
+func TestHandleConnectHintRevertsRecentOffline(t *testing.T) {
+	w := New(WithFetcher(staticFetcher{}), WithProber(nil))
+	mac := "aa:bb:cc:dd:ee:ff"
+	// 模拟 handleDisconnectHint 刚刚结束: 设备已从 known 移除, cooldown 刚记下。
+	w.offlineCooldown[mac] = time.Now()
+
+	var decisions []DecisionKind
+	w.onDecision = func(d Decision) {
+		if d.MAC == mac {
+			decisions = append(decisions, d.Kind)
+		}
+	}
+	col := &eventCollector{}
+	h := syslogHint{MAC: mac, IP: "192.168.1.3"}
+	w.handleConnectHint(context.Background(), h, col.emit, nil)
+
+	if len(col.events) != 1 || col.events[0].Kind != EventOnline {
+		t.Fatalf("撤销窗口内应发出 Online, got %+v", col.events)
+	}
+	if _, stillCooling := w.offlineCooldown[mac]; stillCooling {
+		t.Error("cooldown 应被撤销")
+	}
+	var sawRevert bool
+	for _, k := range decisions {
+		if k == DecisionOfflineReverted {
+			sawRevert = true
+		}
+	}
+	if !sawRevert {
+		t.Errorf("应发出 DecisionOfflineReverted, got %v", decisions)
+	}
+}
+
+// TestHandleConnectHintNoRevertWhenCooldownOld 边界用例:
+// 当冷却期已超过 OfflineRevertWindow (即真离线后过了一段时间), 接入提示
+// 不应触发 OFFLINE_REVERTED, 而应走原有的冷却期上线路径。
+func TestHandleConnectHintNoRevertWhenCooldownOld(t *testing.T) {
+	w := New(
+		WithFetcher(staticFetcher{}),
+		WithProber(nil),
+		WithConfig(Config{OfflineRevertWindow: 100 * time.Millisecond}),
+	)
+	mac := "aa:bb:cc:dd:ee:ff"
+	w.offlineCooldown[mac] = time.Now().Add(-200 * time.Millisecond) // 200ms 前离线, 已超出 100ms 撤销窗口
+
+	var sawRevert bool
+	w.onDecision = func(d Decision) {
+		if d.MAC == mac && d.Kind == DecisionOfflineReverted {
+			sawRevert = true
+		}
+	}
+	col := &eventCollector{}
+	w.handleConnectHint(context.Background(), syslogHint{MAC: mac}, col.emit, nil)
+	if sawRevert {
+		t.Error("超出窗口不应发出 DecisionOfflineReverted")
+	}
+}
+
+// TestHandleConnectHintRevertDisabled OfflineRevertWindow=0 时禁用撤销机制。
+func TestHandleConnectHintRevertDisabled(t *testing.T) {
+	w := New(WithFetcher(staticFetcher{}), WithProber(nil))
+	w.cfg.OfflineRevertWindow = 0 // 禁用
+	mac := "aa:bb:cc:dd:ee:ff"
+	w.offlineCooldown[mac] = time.Now()
+
+	var sawRevert bool
+	w.onDecision = func(d Decision) {
+		if d.MAC == mac && d.Kind == DecisionOfflineReverted {
+			sawRevert = true
+		}
+	}
+	col := &eventCollector{}
+	w.handleConnectHint(context.Background(), syslogHint{MAC: mac}, col.emit, nil)
+	if sawRevert {
+		t.Error("OfflineRevertWindow=0 时不应发出 DecisionOfflineReverted")
+	}
+}
+
 // delayedFetcher 在前 N 次调用返回空, 之后返回预设设备列表。(保留用于回归测试)
 type delayedFetcher struct {
 	emptyUntilCall int
