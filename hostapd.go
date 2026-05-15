@@ -106,12 +106,10 @@ func (f HostapdFetcher) Fetch(ctx context.Context) ([]Device, error) {
 		if h.IP == "" || !isPrivateIP(h.IP) {
 			continue
 		}
-		devs[mac] = Device{
+		devs[mac] = applyHints(Device{
 			MAC:      mac,
-			IP:       h.IP,
-			Hostname: h.Hostname,
 			LastSeen: now,
-		}
+		}, h)
 	}
 
 	out := make([]Device, 0, len(devs))

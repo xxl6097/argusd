@@ -235,5 +235,11 @@ func applyHints(d Device, h Hint) Device {
 	if d.Hostname == "" {
 		d.Hostname = h.Hostname
 	}
+	// Vendor: 如果 fetcher 没提供(hostapd / DHCP-only 数据源), 尝试从
+	// MAC 的 OUI 前缀查询内置数据库。ahsapd 自带 staVendor 字段, 会在
+	// fetcher 层已填充, 这里不会覆盖。
+	if d.Vendor == "" {
+		d.Vendor = LookupVendor(d.MAC)
+	}
 	return d
 }
