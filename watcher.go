@@ -842,6 +842,18 @@ func (w *Watcher) handleDisconnectHint(ctx context.Context, mac string, onEvent 
 			return
 		}
 	}
+	// v1.2.2: 应用层视角去重 — 如果该 MAC 上一次发往应用层的事件就是
+	// Offline 且其后没有 Online, 那么不论 cooldown 是否已自然过期、
+	// 不论时间间隔多长, 重复的 Offline 都是噪音。典型场景: 弱信号睡眠
+	// (90s 内 cooldown 期满) → 8 分钟后内核 Del Sta → syslog hint 重新
+	// 触发离线流程, 但应用层已经知道这台设备离线了。
+	if last, ok := w.lastEventAt[mac]; ok && last.kind == EventOffline {
+		delete(w.known, mac)
+		w.stateMu.Unlock()
+		w.emitDecision(DecisionOfflineDedupedAppLayer, mac,
+			fmt.Sprintf("lastOffline=%v ago", time.Since(last.at).Round(time.Second)))
+		return
+	}
 	w.disconnectInFlight[mac] = struct{}{}
 	w.stateMu.Unlock()
 	defer func() {
@@ -1086,6 +1098,17 @@ func diff(known, cur map[string]Device, misses map[string]int, apRaw, apSet map[
 	// emitIfNotSuppressed 收集事件到 pending, 除冷却期外再叠加 FlapSuppressionWindow 抑制,
 	// 防止中等信号设备在短时间内连续触发同类事件。
 	emitIfNotSuppressed := func(kind EventKind, d Device) {
+		// v1.2.2: 应用层视角去重 — 上一次发往应用层的事件就是 Offline 且
+		// 其后没有 Online → 当前要 emit 的也是 Offline → 重复, 跳过。
+		// 时间无关 (比 FlapSuppressionWindow 宽松, 用于保证应用层永不
+		// 看到相邻两次 Offline 之间没有 Online)。
+		if kind == EventOffline {
+			if last, ok := lastEventAt[d.MAC]; ok && last.kind == EventOffline {
+				emitDecision(DecisionOfflineDedupedAppLayer, d.MAC,
+					fmt.Sprintf("lastOffline=%v ago", now.Sub(last.at).Round(time.Second)))
+				return
+			}
+		}
 		if !cfg.DisableFlapSuppression && cfg.FlapSuppressionWindow > 0 {
 			if last, ok := lastEventAt[d.MAC]; ok && last.kind == kind && now.Sub(last.at) < cfg.FlapSuppressionWindow {
 				// 窗口期内同类事件压制

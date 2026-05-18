@@ -17,6 +17,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.2] - 2026-05-18
+
+**Fix: application layer never sees two Offline events for the same MAC without an Online in between.**
+
+v1.2.1 only suppressed duplicate Offline within the 90s `OfflineCooldown`
+window. Real-world repro showed the bug recurring at 8-minute intervals
+(MT7981 / iPhone 17, weak-signal sleep cycle):
+
+```
+14:09:53 设备离线 RSSI=-97               ← diff path emit, cooldown starts
+14:10:26 冷却期抑制上线 (last refresh)    ← cooldown timestamp updated
+(7m55s passes; iPhone deep sleep, no fetcher hits, cooldown not refreshed)
+                                         ← cooldown naturally expires after 90s
+14:18:21 [系统日志] 无线断开 / Del Sta    ← kernel finally drops station
+14:18:21 设备离线 RSSI=-96               ← BUG: emit Offline #2
+                                         (cooldown 475s ago > 90s window,
+                                          v1.2.1 check doesn't fire)
+```
+
+The application layer (Webhook / DingTalk / Prometheus) sees **two**
+Offline events for the same MAC with **no Online in between** — that
+violates the documented event contract. v1.2.2 makes that invariant
+hold unconditionally regardless of timing.
+
+### Fixed · 修复
+
+- `handleDisconnectHint`: after the existing v1.2.1 cooldown check, also
+  check `lastEventAt[mac]` — if the most recent event emitted to the
+  application layer was `EventOffline` (and there's been no Online
+  since), short-circuit with `DecisionOfflineDedupedAppLayer` and do
+  **not** emit another Offline.
+- `diff` (poll path): same check applied at the entry of
+  `emitIfNotSuppressed` for `EventOffline`. Covers the symmetric
+  scenario where the syslog path missed the disconnect but the
+  poll-driven offline detection fires after a long gap.
+- `TestDiffFlapSuppressionAllowsAfterWindow` /
+  `TestDiffFlapSuppressionDisabled` updated to reflect the new contract
+  (post-window reverse events still work; same-kind repeats blocked).
+
+### Added · 新增
+
+- `DecisionOfflineDedupedAppLayer` (kind `29` /
+  `"OFFLINE_DEDUPED_APPLAYER"` / "已离线(应用层去重,跳过)") surfaces
+  every dedup event for observability.
+- `TestDiffNoDuplicateOffline` regression: Offline at T=0, then 8 minutes
+  of `diffEmit` calls with the device missing — only one Offline ever
+  emitted.
+
+### Compatibility
+
+- Pure addition + behavior fix. No breaking change to the Stable
+  surface; one new `DecisionKind` value (29).
+- A new Online event still re-arms the dedup state (i.e., after Online,
+  the next Offline fires normally). This preserves the symmetric
+  Online/Offline alternation contract.
+- Affected users: anyone receiving repeated Offline alerts for sleeping
+  devices on weak-signal links.
+
+---
+
 ## [1.2.1] - 2026-05-18
 
 **Fix: duplicate Offline emitted when an already-offline weak-signal device finally drops off the AP.**

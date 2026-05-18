@@ -54,6 +54,13 @@ const (
 	// v1.2.1+: 修复弱信号设备先被 diff 报离线、8 分钟后真断开时又被
 	// handleDisconnectHint 重报一次的 bug。
 	DecisionDisconnectAlreadyOffline DecisionKind = 28
+	// DecisionOfflineDedupedAppLayer: 应用层视角已感知该 MAC 离线
+	// (lastEventAt[mac].kind == EventOffline 且其后未发出过 Online),
+	// 任何重复的离线触发都跳过。覆盖 syslog 路径和 diff 路径。
+	// v1.2.2+: 修复"设备睡眠 → diff 报离线 → 8 分钟后真离开 AP →
+	// syslog 又报一次离线"的应用层重复事件问题; 比 v1.2.1 的 90s
+	// cooldown 检查更宽松, 不受时间限制。
+	DecisionOfflineDedupedAppLayer DecisionKind = 29
 
 	// --- diff 轮询分支 ---
 
@@ -100,6 +107,8 @@ func (k DecisionKind) String() string {
 		return "OFFLINE_REVERTED"
 	case DecisionDisconnectAlreadyOffline:
 		return "DISCONNECT_ALREADY_OFFLINE"
+	case DecisionOfflineDedupedAppLayer:
+		return "OFFLINE_DEDUPED_APPLAYER"
 	case DecisionPollAPSleepProtected:
 		return "POLL_SLEEP_PROTECT"
 	case DecisionPollWeakSignalMiss:
@@ -145,6 +154,8 @@ func (k DecisionKind) Label() string {
 		return "撤销离线(立即重连)"
 	case DecisionDisconnectAlreadyOffline:
 		return "断开提示(已离线,跳过)"
+	case DecisionOfflineDedupedAppLayer:
+		return "已离线(应用层去重,跳过)"
 	case DecisionPollAPSleepProtected:
 		return "息屏保护"
 	case DecisionPollWeakSignalMiss:

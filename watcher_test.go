@@ -136,47 +136,79 @@ func TestDiffFlapSuppressionBlocksRepeatOffline(t *testing.T) {
 }
 
 func TestDiffFlapSuppressionAllowsAfterWindow(t *testing.T) {
-	// 超出 FlapSuppressionWindow 后同类事件应正常触发
+	// 超出 FlapSuppressionWindow 后, 反向事件 (上次 Offline → 现在 Online)
+	// 应正常触发, 不被 v1.2.2 应用层去重拦截。
+	// (注意: 同类 Offline → Offline 永远被去重, 见 TestDiffNoDuplicateOffline)
 	d := Device{MAC: "aa", IP: "1.1.1.1"}
-	known := map[string]Device{"aa": d}
+	known := map[string]Device{} // 之前已离线移出 known
 	misses := map[string]int{}
 	cooldown := map[string]time.Time{}
 	// 上次事件在 60s 前, 默认窗口 30s
 	lastAt := map[string]lastEvent{
 		"aa": {at: time.Now().Add(-60 * time.Second), kind: EventOffline},
 	}
-	emptyCur := map[string]Device{}
-	emptyRaw := map[string]Device{}
+	cur := map[string]Device{"aa": d} // 设备又回来了 → 应触发 Online
 	col := &eventCollector{}
 
 	for i := 0; i < 5; i++ {
-		diffEmit(known, emptyCur, misses, emptyRaw, emptyRaw, DefaultConfig(), newDiffCtx(), nil, cooldown, lastAt, col.emit, nil)
+		diffEmit(known, cur, misses, cur, cur, DefaultConfig(), newDiffCtx(), nil, cooldown, lastAt, col.emit, nil)
 	}
-	if len(col.events) != 1 || col.events[0].Kind != EventOffline {
-		t.Errorf("超窗口后应正常触发 EventOffline, got %+v", col.events)
+	if len(col.events) != 1 || col.events[0].Kind != EventOnline {
+		t.Errorf("超窗口后反向事件应正常触发 EventOnline, got %+v", col.events)
 	}
 }
 
 func TestDiffFlapSuppressionDisabled(t *testing.T) {
-	// FlapSuppressionWindow=0 时不压制
+	// FlapSuppressionWindow=0 + 反向事件 (lastAt=Offline, 现在 Online)
+	// 应不受抑制, 立即触发。
 	d := Device{MAC: "aa", IP: "1.1.1.1"}
-	known := map[string]Device{"aa": d}
+	known := map[string]Device{}
 	misses := map[string]int{}
 	cooldown := map[string]time.Time{}
 	lastAt := map[string]lastEvent{
 		"aa": {at: time.Now(), kind: EventOffline},
 	}
-	emptyCur := map[string]Device{}
+	cur := map[string]Device{"aa": d}
 	col := &eventCollector{}
 
 	cfg := DefaultConfig()
 	cfg.FlapSuppressionWindow = 0 // 关闭
 
 	for i := 0; i < 5; i++ {
-		diffEmit(known, emptyCur, misses, emptyCur, emptyCur, cfg, newDiffCtx(), nil, cooldown, lastAt, col.emit, nil)
+		diffEmit(known, cur, misses, cur, cur, cfg, newDiffCtx(), nil, cooldown, lastAt, col.emit, nil)
 	}
-	if len(col.events) != 1 {
-		t.Errorf("FlapSuppressionWindow=0 时不应压制, got %d events", len(col.events))
+	if len(col.events) != 1 || col.events[0].Kind != EventOnline {
+		t.Errorf("FlapSuppressionWindow=0 时反向事件应立即触发, got %+v", col.events)
+	}
+}
+
+// TestDiffNoDuplicateOffline 是 v1.2.2 的回归测试: 应用层视角去重保证
+// 同一台 MAC 不会连续两次看到 Offline。即使 cooldown 已过期、
+// FlapSuppressionWindow 已超时, 只要上一次 emit 给应用层的就是 Offline,
+// 任何路径(diff / handleDisconnectHint)再触发 Offline 都被静默吞掉。
+//
+// 真实场景(MT7981 / iPhone, 2026-05-18): 设备 RSSI=-97 触发 diff 离线,
+// 8 分钟后 cooldown 自然过期, 内核 Del Sta 触发 syslog hint, 又走完整
+// 流程 emit 第二次 Offline — bug 本体。修复后第二次被拦截。
+func TestDiffNoDuplicateOffline(t *testing.T) {
+	d := Device{MAC: "aa", IP: "1.1.1.1"}
+	known := map[string]Device{}
+	misses := map[string]int{}
+	cooldown := map[string]time.Time{}
+	// 模拟 8 分钟前 emit 过 Offline, FlapSuppressionWindow + cooldown 都已过期
+	lastAt := map[string]lastEvent{
+		"aa": {at: time.Now().Add(-8 * time.Minute), kind: EventOffline},
+	}
+	emptyCur := map[string]Device{}
+	col := &eventCollector{}
+
+	cfg := DefaultConfig()
+	for i := 0; i < 10; i++ {
+		diffEmit(known, emptyCur, misses, emptyCur, emptyCur, cfg, newDiffCtx(), nil, cooldown, lastAt, col.emit, nil)
+		_ = d
+	}
+	if len(col.events) != 0 {
+		t.Errorf("已离线的设备不应再次 emit Offline, got %+v", col.events)
 	}
 }
 
