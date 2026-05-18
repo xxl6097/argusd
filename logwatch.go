@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -127,12 +128,25 @@ var (
 // ctx 取消时会终止子进程并关闭 stdout 管道; 非 ctx 取消导致的退出通过返回值上报,
 // 调用方应视为监听失败, 必要时自行重启。
 //
+// 子进程清理 (v1.2.4+):
+//   - 启动前先调用 reapOrphanedLogreads() 清掉历史遗留的 PPid=1 logread 孤儿
+//     (来自前一次 argusd 被 SIGKILL / OOM 杀死时未能清理的子进程)。
+//   - cmd.SysProcAttr 设置 Pdeathsig=SIGTERM + Setpgid=true: 父进程死亡时
+//     内核会主动给子进程发 SIGTERM (即使父被 SIGKILL), 同时进程组隔离允许
+//     一并 kill 整组, 杜绝 busybox / sh 包装层的孤儿。
+//
 // 系统日志是被动监听, 不产生额外 CPU / 网络开销。
 func WatchSyslog(ctx context.Context, onEvent SyslogHandler, onError ErrorHandler) error {
 	if onEvent == nil {
 		return nil
 	}
+	// Best-effort cleanup of stale logread orphans from a prior crash.
+	if n := reapOrphanedLogreads(); n > 0 && onError != nil {
+		safeInvokeErrorStandalone(onError,
+			fmt.Errorf("reaped %d orphaned logread process(es) from prior run", n))
+	}
 	cmd := exec.CommandContext(ctx, "logread", "-f")
+	cmd.SysProcAttr = linuxLogreadAttrs()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("open logread stdout: %w", err)
@@ -145,7 +159,15 @@ func WatchSyslog(ctx context.Context, onEvent SyslogHandler, onError ErrorHandle
 	defer func() {
 		_ = stdout.Close()
 		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
+			// Kill the whole process group when Setpgid was used so
+			// /bin/sh-wrapped descendants get cleaned up too. Negative
+			// PID = process group on Linux. Falls back to plain Kill
+			// on platforms where Setpgid was not applied.
+			if cmd.SysProcAttr != nil && cmd.SysProcAttr.Setpgid {
+				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			} else {
+				_ = cmd.Process.Kill()
+			}
 		}
 	}()
 
@@ -172,6 +194,19 @@ func WatchSyslog(ctx context.Context, onEvent SyslogHandler, onError ErrorHandle
 		return fmt.Errorf("logread process exited: %w", waitErr)
 	}
 	return nil
+}
+
+// safeInvokeErrorStandalone is a panic-isolated ErrorHandler invocation
+// for use outside the *Watcher context (where the regular
+// (*Watcher).safeInvokeError lives). The standalone WatchSyslog function
+// can't reach a Watcher, but still wants the same "user code panic
+// shouldn't kill the goroutine" guarantee.
+func safeInvokeErrorStandalone(cb ErrorHandler, err error) {
+	if cb == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	cb(err)
 }
 
 // parseSyslogLine 尝试从一行日志中提取设备事件。

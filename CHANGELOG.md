@@ -17,6 +17,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.4] - 2026-05-18
+
+**Fix: stale `logread -f` orphans on Linux when argusd is killed hard.**
+
+Real-world repro on a soak router: `ps -ef | grep logread` showed 7
+orphan `logread -f` processes adopted by init (PPid=1) — leftovers
+from previous argusd runs that were SIGKILL'd, OOM-killed, or
+segfaulted before the `defer cmd.Process.Kill()` could run.
+
+### Fixed · 修复
+
+- `WatchSyslog` now sets `SysProcAttr.Pdeathsig = SIGTERM` and
+  `Setpgid = true` on the spawned `logread` child. Linux kernel
+  sends SIGTERM to the child the moment its parent dies — fires
+  even on SIGKILL / OOM / segfault, where Go-side defer cleanup
+  cannot run.
+- Cleanup `defer` now uses `syscall.Kill(-pid, SIGKILL)` (negative
+  PID = entire process group) when `Setpgid` was applied, so any
+  shell-wrapped descendants get cleaned up too.
+
+### Added · 新增
+
+- `reapOrphanedLogreads()` (Linux only): pre-flight at every
+  `WatchSyslog` start, scans `/proc/*/status` for processes whose
+  cmdline is exactly `logread -f` / `/sbin/logread -f` /
+  `/usr/sbin/logread -f` and PPid == 1, sends SIGTERM. Strictly
+  matches Go-spawned form to avoid touching vendor logread daemons
+  (those use `-F`/`-S`/`-p` flags).
+- `safeInvokeErrorStandalone`: panic-isolated ErrorHandler call for
+  callers outside the `*Watcher` instance scope.
+
+### Verified
+
+Live test on the soak router (192.168.1.1):
+```
+=== orphans BEFORE === (10 logread processes, 7 orphans)
+=== orphans AFTER (argusd v1.2.4 started) ===
+"reaped 7 orphaned logread process(es) from prior run"
+(2 vendor argus-app children retained, 1 vendor logread daemon retained, 2 new from this argusd)
+```
+
+### Compatibility
+
+- Linux only (uses `/proc` + Pdeathsig). On macOS / Windows the helpers
+  are no-ops, so unit tests still build and pass.
+- Pure infrastructure fix; no API changes.
+
+---
+
 ## [1.2.3] - 2026-05-18
 
 **Fix: dashboard / `Known()` no longer shows offline devices as online during cooldown.**
