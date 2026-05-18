@@ -48,6 +48,12 @@ const (
 	// DecisionOfflineReverted: 离线判定中途收到接入 hint, 撤销本次 Offline 触发。
 	// v1.1.0+: 修复"边缘信号闪断 → 立即重连"场景被错误识别为离线的问题。
 	DecisionOfflineReverted DecisionKind = 27
+	// DecisionDisconnectAlreadyOffline: handleDisconnectHint 收到断开 hint 时,
+	// 该 MAC 仍在 offlineCooldown 窗口内 — 之前 diff 路径已经发出过 Offline。
+	// 静默清理 known, 不重复 emit。
+	// v1.2.1+: 修复弱信号设备先被 diff 报离线、8 分钟后真断开时又被
+	// handleDisconnectHint 重报一次的 bug。
+	DecisionDisconnectAlreadyOffline DecisionKind = 28
 
 	// --- diff 轮询分支 ---
 
@@ -92,6 +98,8 @@ func (k DecisionKind) String() string {
 		return "DISCONNECT_SKIP_INFLIGHT"
 	case DecisionOfflineReverted:
 		return "OFFLINE_REVERTED"
+	case DecisionDisconnectAlreadyOffline:
+		return "DISCONNECT_ALREADY_OFFLINE"
 	case DecisionPollAPSleepProtected:
 		return "POLL_SLEEP_PROTECT"
 	case DecisionPollWeakSignalMiss:
@@ -135,6 +143,8 @@ func (k DecisionKind) Label() string {
 		return "跳过(已在处理)"
 	case DecisionOfflineReverted:
 		return "撤销离线(立即重连)"
+	case DecisionDisconnectAlreadyOffline:
+		return "断开提示(已离线,跳过)"
 	case DecisionPollAPSleepProtected:
 		return "息屏保护"
 	case DecisionPollWeakSignalMiss:

@@ -804,6 +804,60 @@ func TestHandleDisconnectHintPingFailed(t *testing.T) {
 	}
 }
 
+// TestHandleDisconnectHintSkipsWhenInCooldown 是 v1.2.1 的回归测试。
+// 真机日志(2026-05-18, MT7981 / iPhone 17): 弱信号 iPhone 先被 diff
+// 路径报离线 (RSSI=-97), 冷却期开始。8 分钟后内核才把 station 从 MAC 表
+// 删掉, 触发"无线断开"syslog hint。修复前 handleDisconnectHint 不查
+// cooldown, 会重新 emit 第二次 EventOffline; 修复后, 检测到该 MAC 仍在
+// cooldown 窗口内 → 静默删除 known + 发出 DecisionDisconnectAlreadyOffline,
+// 不再重复 Offline。
+func TestHandleDisconnectHintSkipsWhenInCooldown(t *testing.T) {
+	w := New(WithFetcher(staticFetcher{}), WithProber(nil))
+	mac := "aa:bb:cc:dd:ee:ff"
+	w.known[mac] = Device{MAC: mac, IP: "1.1.1.1"}
+	// diff 路径刚报过 Offline (10s 前), cooldown 仍在 90s 默认窗口内。
+	w.offlineCooldown[mac] = time.Now().Add(-10 * time.Second)
+
+	var sawAlready bool
+	w.onDecision = func(d Decision) {
+		if d.MAC == mac && d.Kind == DecisionDisconnectAlreadyOffline {
+			sawAlready = true
+		}
+	}
+	col := &eventCollector{}
+	w.handleDisconnectHint(context.Background(), mac, col.emit, nil)
+
+	if len(col.events) != 0 {
+		t.Errorf("cooldown 内不应再 emit Offline, got %+v", col.events)
+	}
+	if !sawAlready {
+		t.Error("应发出 DecisionDisconnectAlreadyOffline")
+	}
+	if _, ok := w.known[mac]; ok {
+		t.Error("应从 known 移除(虽然不发事件, 但状态要清理)")
+	}
+}
+
+// TestHandleDisconnectHintEmitsAfterCooldown 边界用例:
+// 当 cooldown 已过期, handleDisconnectHint 应正常走完整流程并 emit。
+func TestHandleDisconnectHintEmitsAfterCooldown(t *testing.T) {
+	p := fakeProber{reachable: map[string]bool{}}
+	w := New(
+		WithFetcher(staticFetcher{}),
+		WithProber(p),
+		WithConfig(Config{OfflineCooldown: 5 * time.Second}),
+	)
+	mac := "aa:bb:cc:dd:ee:ff"
+	w.known[mac] = Device{MAC: mac, IP: "1.1.1.1"}
+	// cooldown 设在 10s 前, 已超出 5s 窗口
+	w.offlineCooldown[mac] = time.Now().Add(-10 * time.Second)
+	col := &eventCollector{}
+	w.handleDisconnectHint(context.Background(), mac, col.emit, nil)
+	if len(col.events) != 1 || col.events[0].Kind != EventOffline {
+		t.Errorf("cooldown 已过期应正常 emit, got %+v", col.events)
+	}
+}
+
 // TestHandleDisconnectHintDedupesInFlight 验证 disconnect/deauth/Del Sta 三连发
 // 时, 仅第一个 worker 走完整 500ms+ping 流程, 后续重复 hint 立即返回。
 func TestHandleDisconnectHintDedupesInFlight(t *testing.T) {

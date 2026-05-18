@@ -829,6 +829,19 @@ func (w *Watcher) handleDisconnectHint(ctx context.Context, mac string, onEvent 
 		w.emitDecision(DecisionDisconnectIgnoredUnknown, mac, "")
 		return
 	}
+	// v1.2.1: 如果该设备已在 offlineCooldown 窗口内(说明 diff 路径刚报过
+	// Offline), 静默清理 known 但不重复 emit。典型场景:弱信号设备先被
+	// diff 判离线(RSSI=-97), 8 分钟后内核才把 station 从 MAC 表删掉触发
+	// syslog hint — 此时不应再发第二次 Offline。
+	if !w.cfg.DisableCooldown {
+		if cdTime, ok := w.offlineCooldown[mac]; ok && time.Since(cdTime) < w.cfg.OfflineCooldown {
+			delete(w.known, mac)
+			w.stateMu.Unlock()
+			w.emitDecision(DecisionDisconnectAlreadyOffline, mac,
+				fmt.Sprintf("cooldown=%v ago", time.Since(cdTime).Round(time.Second)))
+			return
+		}
+	}
 	w.disconnectInFlight[mac] = struct{}{}
 	w.stateMu.Unlock()
 	defer func() {

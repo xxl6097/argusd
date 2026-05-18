@@ -17,6 +17,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.1] - 2026-05-18
+
+**Fix: duplicate Offline emitted when an already-offline weak-signal device finally drops off the AP.**
+
+Real-world repro on MT7981 (iPhone 17 in pocket / sleep, RSSI -97):
+
+```
+10:03:04 设备离线 82:F8:8D:FB:B6:A6 192.168.1.3 RSSI=-97   ← diff 路径正确报离线
+                                                            (5 misses 累计, 进入 90s cooldown)
+
+(8 分钟过去, iPhone 在睡眠中始终保持 -97 dBm 在 AP 关联表里;
+ 每秒 diff 看到 inCooldown && RSSI < -65 → 静默把设备加回 known)
+
+10:11:34 [系统日志] 无线断开 / MAC表移除   ← 内核终于踢掉 station
+10:11:34 设备离线 82:F8:8D:FB:B6:A6 RSSI=-97   ← BUG: 重复 Offline,
+                                                cooldown 已过期 / 没被检查
+```
+
+`handleDisconnectHint` 没检查 `offlineCooldown`,只看 `known` 是否还在,
+而 diff 路径在 cooldown 期间会**反复把弱信号设备加回 known**。结果是
+"诉讼判离线"和"内核确认离线"产生两条 Offline 事件,Webhook 被打两次,
+告警噪音。
+
+### Fixed · 修复
+
+- `handleDisconnectHint` 入口检测 `offlineCooldown[mac]`:若仍在窗口内,
+  静默清理 `known` 但**不再 emit EventOffline**,只发出新的
+  `DecisionDisconnectAlreadyOffline` 决策让上层观察到。
+- 与现有 `disconnectInFlight` / 弱信号 cooldown 机制兼容;
+  `DisableCooldown=true` 时短路检查直接跳过(保留原有"激进上下线"语义)。
+
+### Added · 新增
+
+- `DecisionDisconnectAlreadyOffline` (kind `28` / string
+  `"DISCONNECT_ALREADY_OFFLINE"` / label `"断开提示(已离线,跳过)"`)。
+- 两个回归测试:
+  - `TestHandleDisconnectHintSkipsWhenInCooldown` —— 真实场景
+  - `TestHandleDisconnectHintEmitsAfterCooldown` —— cooldown 过期边界
+
+### Compatibility
+
+- 纯加法 + 行为修复,无破坏性变更。
+- 老 `DecisionHandler` 看到一个新 kind 可忽略。
+- 受影响的用户:**任何启用 OfflineCooldown(默认开)且依赖 syslog hint
+  路径触发离线的部署**。Webhook / Prometheus 告警的重复 Offline
+  噪音应当大幅降低。
+
+---
+
 ## [1.1.0] - 2026-05-14
 
 **Fix: spurious `Offline` for edge-signal devices that bounce off and on the AP within the same second.**
