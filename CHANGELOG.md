@@ -17,6 +17,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.3] - 2026-05-18
+
+**Fix: dashboard / `Known()` no longer shows offline devices as online during cooldown.**
+
+After v1.2.2 silenced duplicate Offline events, a follow-on bug surfaced
+on the live dashboard:
+
+- argusd correctly emit Offline at T=0 (RSSI=-97)
+- application layer received the Offline ✓
+- but `/api/devices` continued to report the same MAC as `online`
+  for the entire 90-second cooldown window — the dashboard never
+  transitioned to "offline"
+
+Root cause: in cooldown, the diff and connect-hint paths "silently
+re-add the device to `known`" (`known[mac] = d`) on every weak-signal
+sighting to refresh the cooldown timestamp. But `Server.handleDevices`
+sources its online list directly from `Watcher.Known()`, so the silent
+re-add kept the device displayed as online forever.
+
+### Fixed · 修复
+
+- `diff` cooldown branch: refresh `cooldown[mac]` but **do not**
+  re-add the device to `known`. The cooldown timestamp still gets
+  updated each tick the device shows up in fetch results, so the
+  v1.2.x dedup machinery still works correctly.
+- `emitConnectEvent` (handleConnectHint): same change — the symmetric
+  syslog-driven path also stops repopulating `known` while in
+  cooldown.
+- `TestDiffCooldownSuppressWeakOnline` updated to assert the new
+  contract: in cooldown with weak RSSI, `known` should remain empty.
+
+### Behavioral effect
+
+- Dashboard view becomes consistent with the application layer:
+  emit Offline → `/api/devices` reports offline within 1 poll tick.
+- Subsequent weak-signal sightings during cooldown extend the cooldown
+  but do not flicker the device back to online.
+- A genuine signal recovery (`RSSI >= CooldownReleaseRSSI`, default
+  -65 dBm) still clears cooldown and emits Online normally.
+
+### Compatibility
+
+- No new exported types or constants; pure internal behavior fix.
+- The cooldown-refresh + dedup machinery (v1.2.1 + v1.2.2) is
+  unchanged and still functional. This release fixes the third
+  symptom of the same edge-signal-iPhone scenario:
+  v1.2.1 stopped duplicate emit within the cooldown window;
+  v1.2.2 stopped duplicate emit beyond the cooldown window;
+  v1.2.3 stops the dashboard from lying about online state.
+
+---
+
 ## [1.2.2] - 2026-05-18
 
 **Fix: application layer never sees two Offline events for the same MAC without an Online in between.**

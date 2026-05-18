@@ -981,9 +981,9 @@ func (w *Watcher) emitConnectEvent(d Device, onEvent EventHandler, onError Error
 		if cdTime, inCD := w.offlineCooldown[d.MAC]; inCD && now.Sub(cdTime) < w.cfg.OfflineCooldown {
 			// 冷却期内: 弱信号时静默更新, 不触发事件
 			if d.RSSI != 0 && d.RSSI < w.cfg.CooldownReleaseRSSI {
-				// 同时刷新 cooldown 保持抑制, 避免冷却期自然过期后重新走离线流程
+				// 刷新 cooldown 保持抑制。v1.2.3+: 不再把设备加回 known,
+				// 应用层已收到 Offline, 仪表盘维持"离线"视图直到信号恢复。
 				w.offlineCooldown[d.MAC] = now
-				w.known[d.MAC] = d
 				w.stateMu.Unlock()
 				w.emitDecision(DecisionCooldownSuppressOnline, d.MAC, fmt.Sprintf("RSSI=%d", d.RSSI))
 				return
@@ -1161,10 +1161,10 @@ func diff(known, cur map[string]Device, misses map[string]int, apRaw, apSet map[
 			if inCooldown(mac) {
 				// 冷却期内: 信号必须恢复到较强水平才允许上线
 				if d.RSSI != 0 && d.RSSI < cfg.CooldownReleaseRSSI {
-					// 静默加入 known, 并刷新 cooldown 保持抑制状态,
-					// 避免冷却期自然过期后又走一遍完整的 miss 计数 → 重复离线
+					// 静默刷新 cooldown 保持抑制状态, 但 v1.2.3+: 不再
+					// 把设备加回 known —— 应用层已收到 Offline, 仪表盘
+					// 也应保持"离线"视图直到信号真正恢复。
 					cooldown[mac] = now
-					known[mac] = d
 					emitDecision(DecisionCooldownSuppressOnline, mac, fmt.Sprintf("RSSI=%d", d.RSSI))
 					continue
 				}

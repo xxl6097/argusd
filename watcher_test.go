@@ -413,7 +413,9 @@ func TestDiffCooldownSuppressRepeatOffline(t *testing.T) {
 }
 
 func TestDiffCooldownSuppressWeakOnline(t *testing.T) {
-	// 冷却期内设备重新出现, 但 RSSI 弱 → 静默更新, 不触发上线
+	// 冷却期内设备重新出现, 但 RSSI 弱 → 静默刷新 cooldown, 不触发上线,
+	// v1.2.3+: 也不加回 known (应用层已收到 Offline, 仪表盘应保持离线
+	// 视图直到信号真正恢复)。
 	known := map[string]Device{} // aa 已被移除 (刚离线)
 	misses := map[string]int{}
 	now := time.Now()
@@ -426,8 +428,8 @@ func TestDiffCooldownSuppressWeakOnline(t *testing.T) {
 	if len(col.events) != 0 {
 		t.Errorf("冷却期内弱信号不应触发上线, got %+v", col.events)
 	}
-	if _, ok := known["aa"]; !ok {
-		t.Error("known 应静默更新包含 aa")
+	if _, ok := known["aa"]; ok {
+		t.Error("v1.2.3: 冷却期内弱信号不应加回 known")
 	}
 }
 
