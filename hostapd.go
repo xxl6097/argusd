@@ -44,9 +44,12 @@ type hostapdClient struct {
 	Signal     int  `json:"signal"`
 }
 
-// hostapdServiceRe 校验 hostapd 接口名, 仅允许字母数字点下划线,
+// hostapdServiceRe 校验 hostapd 接口名, 仅允许字母数字点下划线短横,
 // 避免通过伪造服务名向 exec.Command 传入恶意参数。
-var hostapdServiceRe = regexp.MustCompile(`^hostapd\.\w+$`)
+//
+// 真机接口名形如 `hostapd.phy0-ap0` / `hostapd.wlan0` / `hostapd.ra0`,
+// 主线 OpenWrt 的 phy 命名带短横, 必须包含在白名单内 (v1.2.5)。
+var hostapdServiceRe = regexp.MustCompile(`^hostapd\.[\w-]+$`)
 
 // Fetch 实现 Fetcher 接口。
 func (f HostapdFetcher) Fetch(ctx context.Context) ([]Device, error) {
@@ -80,7 +83,12 @@ func (f HostapdFetcher) Fetch(ctx context.Context) ([]Device, error) {
 		}
 		radio := classifyRadio(status.Freq, clients.Freq)
 		for mac, c := range clients.Clients {
-			if !(c.Assoc && c.Authorized) {
+			// Assoc=true 是 hostapd 客户端在 AP 关联表里的硬指标。
+			// 历史上还要求 Authorized=true, 但 OpenWrt mainline (kernel
+			// 6.6+) 的 hostapd ubus 接口不再返回 authorized 字段, 默认
+			// 零值 false 会让所有 WiFi 客户端被错误跳过, 全部当成有线
+			// (v1.2.5 修复)。仅依赖 Assoc 即可正确识别。
+			if !c.Assoc {
 				continue
 			}
 			m := normalizeMAC(mac)

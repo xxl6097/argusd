@@ -17,6 +17,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.5] - 2026-05-19
+
+**Fix: WiFi clients on mainline OpenWrt (kernel 6.6+) showed up as `wired` with empty Radio/SSID/RSSI.**
+
+Live repro on 504 router (Linux 6.6.93 / OpenWrt mainline / hostapd
+double-radio `phy0-ap0` + `phy1-ap0`): all 8 WiFi devices reported by
+`iwinfo` and `ubus call hostapd.phy0-ap0 get_clients` were rendered as
+有线 (wired) in argusd output, with no signal / radio / SSID.
+
+Two independent bugs combined to defeat the hostapd path:
+
+### Fixed · 修复
+
+1. **`hostapdServiceRe` regex didn't accept dashes.** It was
+   `^hostapd\.\w+$` (`\w` = `[A-Za-z0-9_]`), but mainline OpenWrt
+   names interfaces like `hostapd.phy0-ap0` with a dash. Both
+   `listHostapdInterfaces` and the per-iface guard inside
+   `Fetch` would silently filter those out, returning an empty
+   client list. Widened to `^hostapd\.[\w-]+$`.
+
+2. **Strict `Authorized=true` filter rejected current OpenWrt clients.**
+   Code was `if !(c.Assoc && c.Authorized) { continue }`. The
+   `authorized` field is no longer present in mainline OpenWrt
+   hostapd's `get_clients` JSON (only `assoc` + `signal` etc.);
+   default zero value `false` skipped every client. `assoc=true`
+   alone is sufficient evidence of an active association.
+
+### Verified
+
+After fix on 504:
+```
+共 9 台设备在线 (WiFi: 8, 有线: 1)
+14:D8:81:62:27:C0 ... -32(极强) 2.4G/abala
+28:6C:07:FA:31:4F ... -41(极强) 2.4G/abala
+60:7E:A4:E8:14:88 ... -57(强)   5G/abala_5G
+...
+```
+
+Before: `WiFi: 0, 有线: 9` with all-`-` signal.
+
+### Compatibility
+
+- ahsapd path unaffected.
+- vendor-firmware hostapd builds that DO emit `authorized` are still
+  accepted (no longer required, just ignored).
+- No API changes.
+
+---
+
 ## [1.2.4] - 2026-05-18
 
 **Fix: stale `logread -f` orphans on Linux when argusd is killed hard.**
